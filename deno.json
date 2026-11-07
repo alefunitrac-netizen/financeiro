@@ -1,0 +1,15 @@
+{
+  "tasks": {
+    "test": "deno test --allow-env supabase/functions/tests/",
+    "check": "deno check supabase/functions/whatsapp-webhook/index.ts",
+    "lint": "deno lint supabase/"
+  },
+  "fmt": {
+    "lineWidth": 120
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-import-prefix"]
+    }
+  }
+}

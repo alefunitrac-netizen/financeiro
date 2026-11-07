@@ -1,0 +1,10 @@
+# Configuração mínima para a CLI do Supabase (supabase functions deploy / serve).
+project_id = "financeiro"
+
+[functions.whatsapp-webhook]
+# A Meta não envia JWT do Supabase; a autenticação é a assinatura HMAC (X-Hub-Signature-256).
+verify_jwt = false
+
+[edge_runtime]
+# Necessário para tarefas em segundo plano (EdgeRuntime.waitUntil) rodarem localmente.
+policy = "per_worker"
