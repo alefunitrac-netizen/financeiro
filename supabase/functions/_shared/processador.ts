@@ -28,6 +28,7 @@ import {
 import { normalizarWhatsapp } from "./telefone.ts";
 import type {
   CamposCorrecao,
+  Canal,
   Categoria,
   Conta,
   DataISO,
@@ -114,6 +115,7 @@ interface Resultado {
 }
 
 interface Contexto {
+  canal: Canal;
   usuario: Usuario;
   mensagemId: string;
   hoje: DataISO;
@@ -177,6 +179,7 @@ async function registrar(lancamentos: LancamentoInterpretado[], ctx: Contexto): 
       pagamentos.push(pagamento);
       novas.push({
         usuarioId: ctx.usuario.id,
+        origem: ctx.canal,
         contaId: conta?.id ?? null,
         categoriaId: categoria?.id ?? null,
         mensagemId: ctx.mensagemId,
@@ -293,7 +296,7 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
     deps.repo.listarContas(usuario.id),
     deps.repo.listarCategorias(usuario.id),
   ]);
-  const ctx: Contexto = { usuario, mensagemId, hoje, contas, categorias, deps };
+  const ctx: Contexto = { canal: msg.canal, usuario, mensagemId, hoje, contas, categorias, deps };
 
   const interpretacao = comandoDireto(msg.texto) ??
     (await deps.interpretador.interpretar({

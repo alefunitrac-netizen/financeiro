@@ -39,6 +39,8 @@ export interface Categoria {
 
 export interface NovaTransacao {
   usuarioId: string;
+  /** Canal por onde o lançamento chegou. */
+  origem: Canal;
   contaId: string | null;
   categoriaId: string | null;
   mensagemId: string;

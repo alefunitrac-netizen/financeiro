@@ -26,6 +26,7 @@ Deno.test("registra um gasto no cartão e calcula a fatura", async () => {
   assert.equal(repo.transacoes.length, 1);
   const t = repo.transacoes[0];
   assert.equal(t.valorCentavos, 4790);
+  assert.equal(t.origem, "whatsapp");
   assert.equal(t.contaId, "c-nu");
   assert.equal(t.categoriaId, "k-alim");
   assert.equal(t.dataPagamento, "2026-12-10"); // fecha dia 3 → fatura de dezembro

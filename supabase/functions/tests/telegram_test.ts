@@ -239,6 +239,7 @@ Deno.test("depois de vinculado, o Telegram registra gastos como o WhatsApp", asy
 
   assert.equal(repo.transacoes.length, 1);
   assert.equal(repo.transacoes[0].valorCentavos, 2300);
+  assert.equal(repo.transacoes[0].origem, "telegram");
   assert.match(enviadas[1].texto, /R\$ 23,00 — Uber/);
   assert.equal(enviadas[1].canal, "telegram");
   assert.match(enviadas[2].texto, /Oi, Maria!/);

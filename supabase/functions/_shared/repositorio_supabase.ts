@@ -3,7 +3,7 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2.119.0";
 import type { CamposCorrecao, Categoria, Conta, NovaTransacao, Repositorio, Transacao, Usuario } from "./tipos.ts";
 
 const COLUNAS_TRANSACAO =
-  "id, usuario_id, conta_id, categoria_id, mensagem_id, tipo, descricao, estabelecimento, valor_centavos, data_transacao, data_pagamento, parcela_numero, parcela_total, grupo_parcelamento";
+  "id, usuario_id, origem, conta_id, categoria_id, mensagem_id, tipo, descricao, estabelecimento, valor_centavos, data_transacao, data_pagamento, parcela_numero, parcela_total, grupo_parcelamento";
 
 // deno-lint-ignore no-explicit-any
 type Linha = Record<string, any>;
@@ -12,6 +12,7 @@ function deLinha(l: Linha): Transacao {
   return {
     id: l.id,
     usuarioId: l.usuario_id,
+    origem: l.origem,
     contaId: l.conta_id,
     categoriaId: l.categoria_id,
     mensagemId: l.mensagem_id,
@@ -34,7 +35,7 @@ function paraLinha(t: NovaTransacao): Linha {
     categoria_id: t.categoriaId,
     mensagem_id: t.mensagemId,
     tipo: t.tipo,
-    origem: "whatsapp",
+    origem: t.origem,
     status: "informado",
     descricao: t.descricao,
     estabelecimento: t.estabelecimento,
