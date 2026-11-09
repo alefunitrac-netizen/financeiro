@@ -48,10 +48,17 @@ export interface TransacaoPluggy {
   creditCardMetadata?: { installmentNumber?: number | null; totalInstallments?: number | null } | null;
 }
 
+export interface FaturaPluggy {
+  dueDate: string;
+  billClosingDate?: string | null;
+}
+
 export interface ClientePluggy {
   item(itemId: string): Promise<ItemPluggy>;
   contas(itemId: string): Promise<ContaPluggy[]>;
   transacoes(accountId: string, de: DataISO, ate: DataISO): Promise<TransacaoPluggy[]>;
+  /** Faturas do cartão (a mais útil é a mais recente: dá o dia de fechamento e o de vencimento). */
+  faturas(accountId: string): Promise<FaturaPluggy[]>;
 }
 
 export class ErroPluggy extends Error {
@@ -109,6 +116,10 @@ export function criarClientePluggy(opcoes: {
       // Lista incompleta é pior que nenhuma: faria transações "sumirem" na conferência.
       if (consulta) throw new ErroPluggy("paginação de transações não terminou");
       return todas;
+    },
+    async faturas(accountId) {
+      const r = await ler<{ results?: FaturaPluggy[] }>(`/bills?accountId=${encodeURIComponent(accountId)}&pageSize=50`);
+      return r.results ?? [];
     },
   };
 }
@@ -209,7 +220,8 @@ export function dataDoBanco(iso: string): DataISO {
   return Number.isNaN(instante.getTime()) ? iso.slice(0, 10) : hojeNoFuso("America/Sao_Paulo", instante);
 }
 
-export type TipoBanco = "despesa" | "receita" | "pagamento_fatura";
+/** "transferencia": movimento de dívida (renegociação, empréstimo), que não é ganho nem consumo. */
+export type TipoBanco = "despesa" | "receita" | "pagamento_fatura" | "transferencia";
 
 export interface TransacaoBanco {
   externalId: string;
@@ -231,6 +243,10 @@ export interface ContaSalva {
 
 const RE_PAGAMENTO_FATURA = /\b(pagamento|pagto|pgto|pag)\b.*\b(fatura|cartao)\b|\bfatura\b/;
 const RE_PAGAMENTO_RECEBIDO_CARTAO = /\b(pagamento|pagto|pgto)\b/;
+// Renegociação/empréstimo move dívida de lugar: entra como transferência, fora de despesas e receitas.
+// Juros, encargos e tarifas sobre a dívida continuam sendo despesa.
+const RE_DIVIDA = /\b(renegociacao|refinanciamento|emprestimo|financiamento|credito pessoal|parcelamento de fatura)\b/;
+const RE_CUSTO_DA_DIVIDA = /\b(juros|encargos|iof|multa|tarifa|mora)\b/;
 
 export function mapearTransacao(t: TransacaoPluggy, conta: ContaSalva): TransacaoBanco | null {
   const bruto = typeof t.amountInAccountCurrency === "number" ? t.amountInAccountCurrency : t.amount;
@@ -246,7 +262,9 @@ export function mapearTransacao(t: TransacaoPluggy, conta: ContaSalva): Transaca
   const cartao = conta.tipo === "cartao_credito";
 
   let tipo: TipoBanco;
-  if (cartao) {
+  if (RE_DIVIDA.test(k) && !RE_CUSTO_DA_DIVIDA.test(k)) {
+    tipo = "transferencia";
+  } else if (cartao) {
     // No cartão: positivo é compra; negativo é pagamento da fatura ou estorno.
     tipo = bruto > 0 ? "despesa" : RE_PAGAMENTO_RECEBIDO_CARTAO.test(k) ? "pagamento_fatura" : "receita";
   } else {
@@ -318,6 +336,7 @@ export interface TransacaoSalva {
   externalId: string;
   valorCentavos: number;
   dataTransacao: DataISO;
+  dataPagamento: DataISO | null;
 }
 
 export interface NovaDoBanco extends TransacaoBanco {
@@ -394,7 +413,11 @@ export async function sincronizarConexao(
   for (const cp of await pluggy.contas(conexao.itemId)) {
     const banco = instituicaoDaConta(cp, conector);
     bancos.add(banco);
-    const conta = await repo.salvarConta(conexao.usuarioId, mapearConta(cp, banco));
+    const dados = mapearConta(cp, banco);
+    if (dados.tipo === "cartao_credito" && dados.diaFechamento === null) {
+      Object.assign(dados, await diasPelasFaturas(pluggy, cp.id));
+    }
+    const conta = await repo.salvarConta(conexao.usuarioId, dados);
     const doBanco = (await pluggy.transacoes(cp.id, de, ate))
       .map((t) => mapearTransacao(t, conta))
       .filter((t): t is TransacaoBanco => t !== null);
@@ -411,21 +434,24 @@ export async function sincronizarConexao(
     for (const b of unicas) {
       const salva = conhecidas.get(b.externalId);
       if (salva) {
-        if (salva.valorCentavos !== b.valorCentavos || salva.dataTransacao !== b.dataTransacao) {
+        if (
+          salva.valorCentavos !== b.valorCentavos || salva.dataTransacao !== b.dataTransacao ||
+          salva.dataPagamento !== b.dataPagamento
+        ) {
           await repo.atualizarDoBanco(salva.id, b);
         }
         continue;
       }
-      const seu = b.tipo === "pagamento_fatura" ? null : acharCorrespondente(b, informados, tolerancia);
+      const seu = b.tipo === "despesa" || b.tipo === "receita" ? acharCorrespondente(b, informados, tolerancia) : null;
       if (seu) {
         await repo.confirmar(seu.id, b);
         informados.splice(informados.indexOf(seu), 1);
         resultado.confirmadas++;
         continue;
       }
-      const nomeCategoria = b.tipo === "pagamento_fatura"
-        ? null
-        : categoriaPorTexto(b.descricao, b.tipo, categorias) ?? (b.tipo === "receita" ? "Outras receitas" : "Outros");
+      const nomeCategoria = b.tipo === "despesa" || b.tipo === "receita"
+        ? categoriaPorTexto(b.descricao, b.tipo, categorias) ?? (b.tipo === "receita" ? "Outras receitas" : "Outros")
+        : null;
       const categoria = nomeCategoria ? porNome.get(nomeCategoria) ?? null : null;
       novas.push({ ...b, categoriaId: categoria?.id ?? null });
       resultado.novas.push({ ...b, categoriaId: categoria?.id ?? null, conta: conta.nome, categoria: categoria?.nome ?? null });
@@ -452,11 +478,28 @@ export async function sincronizarConexao(
   return resultado;
 }
 
+/**
+ * Pelo Open Finance o banco nem sempre manda fechamento/vencimento na conta do cartão; a fatura mais
+ * recente traz os dois. Falhar aqui não pode derrubar a sincronização.
+ */
+async function diasPelasFaturas(
+  pluggy: ClientePluggy,
+  accountId: string,
+): Promise<{ diaFechamento: number | null; diaVencimento: number | null }> {
+  try {
+    const recente = (await pluggy.faturas(accountId))
+      .filter((f) => f.dueDate && f.billClosingDate)
+      .sort((a, b) => b.dueDate.localeCompare(a.dueDate))[0];
+    if (recente) return { diaFechamento: diaDe(recente.billClosingDate), diaVencimento: diaDe(recente.dueDate) };
+  } catch { /* sem faturas: segue sem as datas */ }
+  return { diaFechamento: null, diaVencimento: null };
+}
+
 const MAX_LINHAS_AVISO = 8;
 
 /** Mensagem para o Telegram. Null quando não há nada a dizer (sincronização automática silenciosa). */
 export function textoSincronizacao(r: ResultadoSincronizacao, hoje: DataISO, sempre = false): string | null {
-  const gastos = r.novas.filter((n) => n.tipo !== "pagamento_fatura");
+  const gastos = r.novas.filter((n) => n.tipo === "despesa" || n.tipo === "receita");
   if (!gastos.length && !r.confirmadas && !r.canceladas && !r.avisos.length && !sempre) return null;
   const linhas = [`🏦 *${r.instituicao} atualizado*`];
   if (r.confirmadas) {

@@ -140,6 +140,13 @@ Deno.test("transações: sinal, tipo, centavos, parcelas e chave estável", () =
   assert.equal(mapearTransacao(tx({ id: "t9", amount: 0 }), CONTA_CC), null);
 });
 
+Deno.test("dívida: renegociação vira transferência; juros e encargos sobre ela continuam despesa", () => {
+  assert.equal(mapearTransacao(tx({ id: "r1", description: "Renegociação do cartão", amount: -775.99 }), CONTA_CARTAO)!.tipo, "transferencia");
+  assert.equal(mapearTransacao(tx({ id: "r2", description: "SAIDA RENEGOCIACAO ITAU", amount: -100.71 }), CONTA_CC)!.tipo, "transferencia");
+  assert.equal(mapearTransacao(tx({ id: "r3", description: "ENCARGOS REFINANCIAMENTO", amount: 14.43 }), CONTA_CARTAO)!.tipo, "despesa");
+  assert.equal(mapearTransacao(tx({ id: "r4", description: "JUROS DE MORA", amount: 0.96 }), CONTA_CARTAO)!.tipo, "despesa");
+});
+
 Deno.test("conferência: mesmo valor e tipo, conta igual ou sem conta, data mais próxima", () => {
   const b: TransacaoBanco = {
     externalId: "x", contaId: "c1", tipo: "despesa", descricao: "IFOOD", valorCentavos: 3500,
@@ -178,6 +185,7 @@ interface Linha {
   descricaoBanco: string | null;
   valorCentavos: number;
   dataTransacao: string;
+  dataPagamento: string | null;
   externalId: string | null;
 }
 
@@ -206,7 +214,13 @@ class RepoBancoMemoria implements RepositorioBanco {
   buscarPorExternos(_u: string, externos: string[]) {
     return Promise.resolve(
       this.transacoes.filter((t) => t.externalId && externos.includes(t.externalId))
-        .map((t) => ({ id: t.id, externalId: t.externalId!, valorCentavos: t.valorCentavos, dataTransacao: t.dataTransacao })),
+        .map((t) => ({
+          id: t.id,
+          externalId: t.externalId!,
+          valorCentavos: t.valorCentavos,
+          dataTransacao: t.dataTransacao,
+          dataPagamento: t.dataPagamento,
+        })),
     );
   }
   informadosParaConciliar(_u: string, inicio: string, fim: string) {
@@ -219,12 +233,16 @@ class RepoBancoMemoria implements RepositorioBanco {
   confirmar(id: string, b: TransacaoBanco) {
     Object.assign(this.transacoes.find((t) => t.id === id)!, {
       externalId: b.externalId, status: "confirmado", contaId: b.contaId, valorCentavos: b.valorCentavos,
-      dataTransacao: b.dataTransacao, descricaoBanco: b.descricao,
+      dataTransacao: b.dataTransacao, dataPagamento: b.dataPagamento, descricaoBanco: b.descricao,
     });
     return Promise.resolve();
   }
   atualizarDoBanco(id: string, b: TransacaoBanco) {
-    Object.assign(this.transacoes.find((t) => t.id === id)!, { valorCentavos: b.valorCentavos, dataTransacao: b.dataTransacao });
+    Object.assign(this.transacoes.find((t) => t.id === id)!, {
+      valorCentavos: b.valorCentavos,
+      dataTransacao: b.dataTransacao,
+      dataPagamento: b.dataPagamento,
+    });
     return Promise.resolve();
   }
   inserirDoBanco(_u: string, novas: NovaDoBanco[]) {
@@ -232,7 +250,7 @@ class RepoBancoMemoria implements RepositorioBanco {
       this.transacoes.push({
         id: `t${++this.seq}`, contaId: n.contaId, categoriaId: n.categoriaId, tipo: n.tipo, status: "confirmado", origem: "banco",
         descricao: n.descricao, descricaoBanco: n.descricao, valorCentavos: n.valorCentavos, dataTransacao: n.dataTransacao,
-        externalId: n.externalId,
+        dataPagamento: n.dataPagamento, externalId: n.externalId,
       });
     }
     return Promise.resolve();
@@ -258,7 +276,8 @@ class RepoBancoMemoria implements RepositorioBanco {
   informar(p: Partial<Linha>) {
     const l: Linha = {
       id: `t${++this.seq}`, contaId: null, categoriaId: "k-alim", tipo: "despesa", status: "informado", origem: "telegram",
-      descricao: "Almoço", descricaoBanco: null, valorCentavos: 3500, dataTransacao: "2026-11-07", externalId: null, ...p,
+      descricao: "Almoço", descricaoBanco: null, valorCentavos: 3500, dataTransacao: "2026-11-07", dataPagamento: null,
+      externalId: null, ...p,
     };
     this.transacoes.push(l);
     return l;
@@ -270,6 +289,7 @@ function pluggyFalsa(transacoes: Record<string, TransacaoPluggy[]>, item: Record
     item: (id) => Promise.resolve({ id, status: "UPDATED", connector: { name: "Itaú" }, consentExpiresAt: "2027-11-08T00:00:00.000Z", ...item }),
     contas: () => Promise.resolve([CARTAO, CORRENTE]),
     transacoes: (accountId) => Promise.resolve(transacoes[accountId] ?? []),
+    faturas: () => Promise.resolve([]),
   };
 }
 
@@ -330,6 +350,34 @@ Deno.test("sincronização: confirma o que você informou, grava o resto e categ
   assert.equal(uber.status, "cancelado");
   assert.equal(almoco.status, "informado");
   assert.equal(almoco.externalId, null);
+});
+
+Deno.test("cartão sem datas na conta: fechamento e vencimento vêm da fatura mais recente", async () => {
+  const repo = new RepoBancoMemoria();
+  const semDatas = { ...CARTAO, creditData: { creditLimit: 200 } };
+  const pluggy: ClientePluggy = {
+    ...pluggyFalsa({ "acc-cartao": [tx({ id: "c1", description: "POSTO AEROTOWN", amount: 40, date: "2026-10-20T00:00:00.000Z" })] }),
+    contas: () => Promise.resolve([semDatas]),
+    faturas: () =>
+      Promise.resolve([
+        { dueDate: "2026-10-12T00:00:00.000Z", billClosingDate: "2026-10-05T00:00:00.000Z" },
+        { dueDate: "2026-11-12T00:00:00.000Z", billClosingDate: "2026-11-05T00:00:00.000Z" },
+      ]),
+  };
+  await sincronizarConexao(repo.conexoes[0], { repo, pluggy, agora: AGORA });
+  const conta = repo.contas.get("pluggy:acc-cartao")!;
+  assert.equal(conta.diaFechamento, 5);
+  assert.equal(conta.diaVencimento, 12);
+  assert.equal(repo.transacoes[0].dataPagamento, "2026-11-12"); // compra de 20/10 cai na fatura que fecha 05/11
+
+  // Fatura indisponível não derruba a sincronização.
+  const repo2 = new RepoBancoMemoria();
+  await sincronizarConexao(repo2.conexoes[0], {
+    repo: repo2,
+    pluggy: { ...pluggy, faturas: () => Promise.reject(new Error("404")) },
+    agora: AGORA,
+  });
+  assert.equal(repo2.contas.get("pluggy:acc-cartao")!.diaFechamento, null);
 });
 
 Deno.test("sincronização avisa autorização perto de vencer e conexão com erro", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { criarInterpretadorHibrido } from "../_shared/interpretador_hibrido.ts";
-import { interpretarPorRegras } from "../_shared/interpretador_regras.ts";
+import { categoriaPorTexto, interpretarPorRegras } from "../_shared/interpretador_regras.ts";
 import { processarMensagem } from "../_shared/processador.ts";
 import { TEXTO_NAO_ENTENDI } from "../_shared/respostas.ts";
 import type { Categoria, ContextoInterpretacao, Interpretacao, LancamentoInterpretado } from "../_shared/tipos.ts";
@@ -125,6 +125,16 @@ Deno.test("categorias por palavra-chave e receitas", () => {
   assert.equal(pix.tipo, "receita");
   assert.equal(pix.categoria, "Outras receitas");
   assert.equal(pix.descricao, "Pix joão");
+
+  // Descrições como vêm do banco
+  const cat = (texto: string, tipo: "despesa" | "receita" = "despesa") =>
+    categoriaPorTexto(texto, tipo, CATEGORIAS_PADRAO);
+  assert.equal(cat("Entrada PAGTO Salários", "receita"), "Salário");
+  assert.equal(cat("Pagamento de Pix QR Code MC DONALD'S"), "Alimentação");
+  assert.equal(cat("EC *SHELLBOXOSASCOBRA"), null); // nome colado na cidade: não dá para separar com segurança
+  assert.equal(cat("SHELLBOX OSASCO"), "Transporte");
+  assert.equal(cat("ENCARGOS REFINANCIAMENTO"), "Impostos e taxas");
+  assert.equal(cat("Compra débito Uber Uber *trip Help.u"), "Transporte");
 
   assert.equal(umLancamento("paguei o salário da diarista 300").tipo, "despesa");
   assert.equal(umLancamento("paguei o salário da diarista 300").categoria, "Moradia");

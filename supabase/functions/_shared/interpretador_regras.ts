@@ -22,7 +22,7 @@ const PALAVRAS_DESPESA: Record<string, string[]> = {
     "almoco", "almocei", "almocar", "jantar", "jantei", "janta", "cafe", "cafe da manha", "lanche", "lanchei",
     "lanchonete", "ifood", "uber eats", "rappi", "delivery", "restaurante", "pizza", "pizzaria", "hamburguer",
     "hamburgueria", "burger", "sushi", "japones", "padaria", "pao", "acai", "sorvete", "marmita", "marmitex", "comida",
-    "bar", "boteco", "cerveja", "chopp", "mcdonalds", "mc donalds", "burger king", "bk", "subway", "starbucks",
+    "bar", "boteco", "cerveja", "chopp", "mcdonalds", "mc donalds", "mc donald", "mcdonald", "burger king", "bk", "subway", "starbucks",
     "salgado", "refrigerante", "quentinha",
   ],
   "Mercado": [
@@ -33,7 +33,7 @@ const PALAVRAS_DESPESA: Record<string, string[]> = {
   "Transporte": [
     "uber", "99", "99pop", "taxi", "onibus", "metro", "trem", "brt", "vlt", "barca", "combustivel", "gasolina",
     "etanol", "diesel", "abastecer", "abasteci", "posto", "estacionamento", "pedagio", "riocard", "bilhete unico",
-    "passagem de onibus", "lava jato", "oficina", "mecanico", "pneu",
+    "passagem de onibus", "lava jato", "oficina", "mecanico", "pneu", "shellbox", "shell", "ipiranga", "petrobras", "auto posto",
   ],
   "Moradia": ["aluguel", "condominio", "iptu", "reforma", "diarista", "faxina", "faxineira", "moveis"],
   "Contas da casa": [
@@ -60,12 +60,12 @@ const PALAVRAS_DESPESA: Record<string, string[]> = {
   ],
   "Pets": ["pet", "petshop", "pet shop", "racao", "veterinario", "banho e tosa"],
   "Viagem": ["viagem", "hotel", "pousada", "airbnb", "hospedagem", "passagem aerea", "passagem", "voo", "aeroporto"],
-  "Impostos e taxas": ["imposto", "impostos", "taxa", "tarifa", "iof", "ipva", "multa", "anuidade", "juros", "darf"],
+  "Impostos e taxas": ["imposto", "impostos", "taxa", "tarifa", "iof", "ipva", "multa", "anuidade", "juros", "darf", "encargos", "mora"],
   "Presentes e doações": ["presente", "presentes", "doacao", "dizimo", "oferta", "vaquinha", "caridade"],
 };
 
 const PALAVRAS_RECEITA: Record<string, string[]> = {
-  "Salário": ["salario", "holerite", "adiantamento", "decimo terceiro", "ferias", "plr"],
+  "Salário": ["salario", "salarios", "pagto salario", "holerite", "adiantamento", "decimo terceiro", "ferias", "plr"],
   "Renda extra": ["freela", "freelance", "bico", "extra", "venda", "vendi", "comissao"],
   "Reembolso": ["reembolso", "estorno", "devolucao", "ressarcimento"],
   "Rendimentos": ["rendimento", "rendimentos", "rendeu", "dividendo", "dividendos", "juros", "cdb", "cashback"],

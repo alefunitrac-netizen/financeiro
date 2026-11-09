@@ -107,7 +107,7 @@ export function criarRepositorioBanco(db: SupabaseClient): RepositorioBanco {
       for (const lote of lotes(externos)) {
         const { data, error } = await db
           .from("transacoes")
-          .select("id, external_id, valor_centavos, data_transacao")
+          .select("id, external_id, valor_centavos, data_transacao, data_pagamento")
           .eq("usuario_id", usuarioId)
           .in("external_id", lote);
         if (error) falhar("buscarPorExternos", error);
@@ -117,6 +117,7 @@ export function criarRepositorioBanco(db: SupabaseClient): RepositorioBanco {
             externalId: l.external_id,
             valorCentavos: Number(l.valor_centavos),
             dataTransacao: l.data_transacao,
+            dataPagamento: l.data_pagamento,
           });
         }
       }
