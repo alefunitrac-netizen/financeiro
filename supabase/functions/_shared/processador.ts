@@ -15,6 +15,7 @@ import {
   type ItemLancamento,
   itensDeTransacoes,
   normalizar,
+  TEXTO_BOT_PRIVADO,
   TEXTO_ERRO,
   TEXTO_FORA_DO_ESCOPO,
   TEXTO_SO_TEXTO,
@@ -22,6 +23,7 @@ import {
   textoDesfeito,
   textoRegistro,
   textoResumo,
+  textoVinculado,
 } from "./respostas.ts";
 import { normalizarWhatsapp } from "./telefone.ts";
 import type {
@@ -29,10 +31,10 @@ import type {
   Categoria,
   Conta,
   DataISO,
-  EnviadorWhatsApp,
   Interpretacao,
   Interpretador,
   LancamentoInterpretado,
+  Mensageiro,
   MensagemRecebida,
   NovaTransacao,
   Repositorio,
@@ -43,7 +45,7 @@ import type {
 export interface Dependencias {
   repo: Repositorio;
   interpretador: Interpretador;
-  whatsapp: EnviadorWhatsApp;
+  mensageiro: Mensageiro;
   agora: () => Date;
   novoId: () => string;
   log: (evento: string, dados?: Record<string, unknown>) => void;
@@ -93,7 +95,7 @@ export function comandoDireto(texto: string): Interpretacao | null {
   if (["desfazer", "desfaz", "cancelar", "cancela", "apagar", "apaga"].includes(t)) {
     return { intencao: "desfazer", ...vazio };
   }
-  if (["ajuda", "help", "menu", "oi", "ola", "comandos"].includes(t)) return { intencao: "ajuda", ...vazio };
+  if (["ajuda", "help", "menu", "oi", "ola", "comandos", "start"].includes(t)) return { intencao: "ajuda", ...vazio };
   if (["resumo", "extrato", "saldo"].includes(t)) {
     return {
       intencao: "resumo",
@@ -333,23 +335,49 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
   return { resultado, interpretacao };
 }
 
-/** Ponto de entrada: processa uma mensagem do WhatsApp de ponta a ponta. Nunca lança erro. */
+/** "/start CODIGO" — o link de vínculo do Telegram (t.me/<bot>?start=CODIGO) envia isso. */
+const COMANDO_VINCULO = /^\/start(?:@\w+)?\s+([A-Za-z0-9_-]{16,64})\s*$/;
+
+/** Descobre de quem é a mensagem. No Telegram, também faz o vínculo pelo código de uso único. */
+async function identificar(
+  msg: MensagemRecebida,
+  deps: Dependencias,
+): Promise<{ usuario: Usuario; acabouDeVincular: boolean } | null> {
+  if (msg.canal === "whatsapp") {
+    const usuario = await deps.repo.buscarUsuarioPorWhatsapp(normalizarWhatsapp(msg.remetente));
+    return usuario && { usuario, acabouDeVincular: false };
+  }
+  const codigo = msg.texto ? COMANDO_VINCULO.exec(msg.texto.trim())?.[1] : undefined;
+  if (codigo) {
+    const usuario = await deps.repo.vincularTelegram(codigo, msg.remetente);
+    if (usuario) return { usuario, acabouDeVincular: true };
+  }
+  const usuario = await deps.repo.buscarUsuarioPorTelegram(msg.remetente);
+  return usuario && { usuario, acabouDeVincular: false };
+}
+
+/** Ponto de entrada: processa uma mensagem de qualquer canal, de ponta a ponta. */
 export async function processarMensagem(msg: MensagemRecebida, deps: Dependencias): Promise<void> {
-  const usuario = await deps.repo.buscarUsuarioPorWhatsapp(normalizarWhatsapp(msg.de));
-  if (!usuario) {
-    // Número fora da lista: não responde nem grava (não confirmamos que o bot existe).
-    deps.log("remetente_desconhecido", { final: msg.de.slice(-4) });
+  const quem = await identificar(msg, deps);
+  if (!quem) {
+    // Fora da lista: não grava nada. No Telegram, quem abre o bot (/start) recebe só um aviso curto.
+    deps.log("remetente_desconhecido", { canal: msg.canal, final: msg.remetente.slice(-4) });
+    if (msg.canal === "telegram" && msg.texto?.trim().startsWith("/start")) {
+      await deps.mensageiro.responder(msg, TEXTO_BOT_PRIVADO).catch(() => {});
+    }
     return;
   }
+  const { usuario, acabouDeVincular } = quem;
 
   const mensagemId = await deps.repo.registrarMensagem({
     usuarioId: usuario.id,
-    wamid: msg.wamid,
+    canal: msg.canal,
+    idExterno: msg.idExterno,
     tipo: msg.tipo,
     texto: msg.texto,
   });
   if (!mensagemId) {
-    deps.log("mensagem_duplicada", { wamid: msg.wamid });
+    deps.log("mensagem_duplicada", { canal: msg.canal, id: msg.idExterno });
     return;
   }
 
@@ -358,23 +386,28 @@ export async function processarMensagem(msg: MensagemRecebida, deps: Dependencia
   let interpretacao: Interpretacao | null = null;
   let erro: string | undefined;
   try {
-    const r = await executar(msg, usuario, mensagemId, deps);
-    texto = r.resultado.texto;
-    status = r.resultado.status;
-    interpretacao = r.interpretacao;
+    if (acabouDeVincular) {
+      texto = textoVinculado(usuario.nome);
+      status = "processada";
+    } else {
+      const r = await executar(msg, usuario, mensagemId, deps);
+      texto = r.resultado.texto;
+      status = r.resultado.status;
+      interpretacao = r.interpretacao;
+    }
   } catch (e) {
     texto = TEXTO_ERRO;
     status = "erro";
     erro = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    deps.log("erro_processamento", { wamid: msg.wamid, erro });
+    deps.log("erro_processamento", { id: msg.idExterno, erro });
   }
 
   try {
-    await deps.whatsapp.enviarTexto({ phoneNumberId: msg.phoneNumberId, para: msg.de, texto, responderA: msg.wamid });
+    await deps.mensageiro.responder(msg, texto);
   } catch (e) {
     const falha = `envio: ${e instanceof Error ? e.message : String(e)}`;
     erro = erro ? `${erro} | ${falha}` : falha;
-    deps.log("erro_envio", { wamid: msg.wamid, erro: falha });
+    deps.log("erro_envio", { id: msg.idExterno, erro: falha });
   }
 
   await deps.repo.finalizarMensagem(mensagemId, { status, interpretacao, resposta: texto, erro });

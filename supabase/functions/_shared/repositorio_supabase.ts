@@ -1,6 +1,6 @@
 // Implementação do Repositorio sobre o Postgres do Supabase (supabase-js).
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.119.0";
-import type { CamposCorrecao, Categoria, Conta, NovaTransacao, Repositorio, Transacao } from "./tipos.ts";
+import type { CamposCorrecao, Categoria, Conta, NovaTransacao, Repositorio, Transacao, Usuario } from "./tipos.ts";
 
 const COLUNAS_TRANSACAO =
   "id, usuario_id, conta_id, categoria_id, mensagem_id, tipo, descricao, estabelecimento, valor_centavos, data_transacao, data_pagamento, parcela_numero, parcela_total, grupo_parcelamento";
@@ -60,26 +60,53 @@ function falhar(operacao: string, erro: { message: string }): never {
   throw new Error(`${operacao}: ${erro.message}`);
 }
 
+const COLUNAS_USUARIO = "id, nome, whatsapp, fuso_horario";
+
+function deLinhaUsuario(l: Linha | null): Usuario | null {
+  return l ? { id: l.id, nome: l.nome, whatsapp: l.whatsapp, fusoHorario: l.fuso_horario } : null;
+}
+
 export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
   return {
     async buscarUsuarioPorWhatsapp(numero) {
+      const { data, error } = await db.from("usuarios").select(COLUNAS_USUARIO).eq("whatsapp", numero).maybeSingle();
+      if (error) falhar("buscarUsuarioPorWhatsapp", error);
+      return deLinhaUsuario(data);
+    },
+
+    async buscarUsuarioPorTelegram(telegramId) {
       const { data, error } = await db
         .from("usuarios")
-        .select("id, nome, whatsapp, fuso_horario")
-        .eq("whatsapp", numero)
+        .select(COLUNAS_USUARIO)
+        .eq("telegram_id", telegramId)
         .maybeSingle();
-      if (error) falhar("buscarUsuario", error);
-      return data ? { id: data.id, nome: data.nome, whatsapp: data.whatsapp, fusoHorario: data.fuso_horario } : null;
+      if (error) falhar("buscarUsuarioPorTelegram", error);
+      return deLinhaUsuario(data);
+    },
+
+    async vincularTelegram(codigo, telegramId) {
+      // Um único UPDATE: o código só funciona uma vez e some ao ser usado.
+      const { data, error } = await db
+        .from("usuarios")
+        .update({ telegram_id: telegramId, codigo_vinculo: null })
+        .eq("codigo_vinculo", codigo)
+        .select(COLUNAS_USUARIO)
+        .maybeSingle();
+      if (error) {
+        if (error.code === "23505") return null; // esse Telegram já está ligado a outro usuário
+        falhar("vincularTelegram", error);
+      }
+      return deLinhaUsuario(data);
     },
 
     async registrarMensagem(m) {
       const { data, error } = await db
         .from("mensagens")
-        .insert({ usuario_id: m.usuarioId, wamid: m.wamid, tipo: m.tipo, texto: m.texto })
+        .insert({ usuario_id: m.usuarioId, canal: m.canal, id_externo: m.idExterno, tipo: m.tipo, texto: m.texto })
         .select("id")
         .single();
       if (error) {
-        if (error.code === "23505") return null; // wamid repetido = reenvio da Meta
+        if (error.code === "23505") return null; // mensagem repetida = reenvio do canal
         falhar("registrarMensagem", error);
       }
       return data.id;

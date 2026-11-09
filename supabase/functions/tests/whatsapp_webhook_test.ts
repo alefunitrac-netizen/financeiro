@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { criarHandler } from "../_shared/webhook.ts";
-import { assinaturaValida, criarEnviadorWhatsApp, extrairMensagens } from "../_shared/whatsapp.ts";
+import { criarHandlerWhatsApp } from "../_shared/webhook_whatsapp.ts";
+import { assinaturaValida, criarMensageiroWhatsApp, extrairMensagens } from "../_shared/whatsapp.ts";
 import type { MensagemRecebida } from "../_shared/tipos.ts";
 
 const SEGREDO = "app-secret-de-teste";
@@ -50,8 +50,9 @@ Deno.test("assinatura HMAC: aceita a certa, recusa errada/ausente/sem segredo", 
 Deno.test("extrai mensagens de texto e ignora status de entrega", () => {
   const msgs = extrairMensagens(payloadTexto("uber 23"));
   assert.deepEqual(msgs, [{
-    wamid: "wamid.ABC",
-    de: "551187654321",
+    canal: "whatsapp",
+    idExterno: "wamid.ABC",
+    remetente: "551187654321",
     nomePerfil: "Maria",
     tipo: "text",
     texto: "uber 23",
@@ -80,7 +81,7 @@ Deno.test("mensagem de áudio vem sem texto", () => {
 function criar() {
   const processadas: MensagemRecebida[] = [];
   const tarefas: Promise<unknown>[] = [];
-  const handler = criarHandler({
+  const handler = criarHandlerWhatsApp({
     verifyToken: "token-verificacao",
     appSecret: SEGREDO,
     processar: (m) => {
@@ -126,19 +127,20 @@ Deno.test("webhook: POST sem assinatura válida é recusado e nada é processado
   assert.equal((await handler(new Request("https://x/", { method: "PUT" }))).status, 405);
 });
 
-Deno.test("enviador monta a chamada da Cloud API e propaga erro", async () => {
+Deno.test("mensageiro monta a chamada da Cloud API e propaga erro", async () => {
   const chamadas: { url: string; init: RequestInit }[] = [];
   let status = 200;
-  const enviador = criarEnviadorWhatsApp({
+  const mensageiro = criarMensageiroWhatsApp({
     accessToken: "TOKEN",
-    versaoApi: "v23.0",
+    versaoApi: "v25.0",
     fetch: (url, init) => {
       chamadas.push({ url: String(url), init: init! });
       return Promise.resolve(new Response("{}", { status }));
     },
   });
-  await enviador.enviarTexto({ phoneNumberId: "PHONE1", para: "551187654321", texto: "oi", responderA: "wamid.ABC" });
-  assert.equal(chamadas[0].url, "https://graph.facebook.com/v23.0/PHONE1/messages");
+  const [msg] = extrairMensagens(payloadTexto("almoço 45"));
+  await mensageiro.responder(msg, "oi");
+  assert.equal(chamadas[0].url, "https://graph.facebook.com/v25.0/PHONE1/messages");
   assert.equal((chamadas[0].init.headers as Record<string, string>).Authorization, "Bearer TOKEN");
   assert.deepEqual(JSON.parse(chamadas[0].init.body as string), {
     messaging_product: "whatsapp",
@@ -150,5 +152,5 @@ Deno.test("enviador monta a chamada da Cloud API e propaga erro", async () => {
   });
 
   status = 401;
-  await assert.rejects(enviador.enviarTexto({ phoneNumberId: "P", para: "1", texto: "x" }), /WhatsApp respondeu 401/);
+  await assert.rejects(mensageiro.responder(msg, "x"), /WhatsApp respondeu 401/);
 });

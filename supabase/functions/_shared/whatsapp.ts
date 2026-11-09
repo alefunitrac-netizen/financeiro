@@ -1,5 +1,5 @@
 // Integração com a WhatsApp Cloud API (oficial da Meta).
-import type { EnviadorWhatsApp, MensagemRecebida } from "./tipos.ts";
+import type { Mensageiro, MensagemRecebida } from "./tipos.ts";
 
 const codificador = new TextEncoder();
 
@@ -83,8 +83,9 @@ export function extrairMensagens(payload: unknown): MensagemRecebida[] {
         const tipo = texto(m.type);
         if (!wamid || !de || !tipo) continue;
         resultado.push({
-          wamid,
-          de,
+          canal: "whatsapp",
+          idExterno: wamid,
+          remetente: de,
           nomePerfil: nomes.get(de) ?? null,
           tipo,
           texto: tipo === "text" && ehObj(m.text) ? texto(m.text.body) : null,
@@ -96,16 +97,20 @@ export function extrairMensagens(payload: unknown): MensagemRecebida[] {
   return resultado;
 }
 
-export function criarEnviadorWhatsApp(opcoes: {
+export function criarMensageiroWhatsApp(opcoes: {
   accessToken: string;
   versaoApi: string;
   fetch?: typeof fetch;
-}): EnviadorWhatsApp {
+}): Mensageiro {
   const fazerFetch = opcoes.fetch ?? fetch;
   return {
-    async enviarTexto({ phoneNumberId, para, texto, responderA }) {
+    async responder(msg, texto) {
+      if (msg.canal !== "whatsapp") throw new Error(`Mensageiro do WhatsApp não responde no canal ${msg.canal}`);
+      // Responder ao wa_id que veio da Meta (não ao número normalizado) e citando a mensagem original.
+      const para = msg.remetente;
+      const responderA = msg.idExterno;
       const resposta = await fazerFetch(
-        `https://graph.facebook.com/${opcoes.versaoApi}/${phoneNumberId}/messages`,
+        `https://graph.facebook.com/${opcoes.versaoApi}/${msg.phoneNumberId}/messages`,
         {
           method: "POST",
           headers: {

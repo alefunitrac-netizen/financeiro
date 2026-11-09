@@ -1,7 +1,8 @@
-// Implementações em memória para testar o núcleo sem banco, sem Meta e sem IA.
+// Implementações em memória para testar o núcleo sem banco, sem canal de mensagem e sem IA.
 import type { Dependencias } from "../_shared/processador.ts";
 import type {
   CamposCorrecao,
+  Canal,
   Categoria,
   Conta,
   ContextoInterpretacao,
@@ -20,6 +21,8 @@ export const USUARIO: Usuario = {
   whatsapp: "5511987654321",
   fusoHorario: "America/Sao_Paulo",
 };
+
+export const CODIGO_VINCULO = "codigo-secreto-0123456789";
 
 export const CONTAS: Conta[] = [
   { id: "c-nu", nome: "Nubank crédito", tipo: "cartao_credito", apelidos: ["nubank", "roxinho"], diaFechamento: 3, diaVencimento: 10 },
@@ -42,19 +45,42 @@ interface TransacaoMem extends Transacao {
   ordem: number;
 }
 
+interface UsuarioMem extends Usuario {
+  telegramId: string | null;
+  codigoVinculo: string | null;
+}
+
 export class RepoMemoria implements Repositorio {
-  usuarios: Usuario[] = [USUARIO];
-  mensagens = new Map<string, { id: string; wamid: string; status?: string; resposta?: string; erro?: string; interpretacao?: unknown }>();
+  usuarios: UsuarioMem[] = [{ ...USUARIO, telegramId: null, codigoVinculo: CODIGO_VINCULO }];
+  mensagens = new Map<
+    string,
+    { id: string; canal: Canal; idExterno: string; status?: string; resposta?: string; erro?: string; interpretacao?: unknown }
+  >();
   transacoes: TransacaoMem[] = [];
   private seq = 0;
 
-  buscarUsuarioPorWhatsapp(numero: string) {
-    return Promise.resolve(this.usuarios.find((u) => u.whatsapp === numero) ?? null);
+  private publico(u: UsuarioMem | undefined): Usuario | null {
+    return u ? { id: u.id, nome: u.nome, whatsapp: u.whatsapp, fusoHorario: u.fusoHorario } : null;
   }
-  registrarMensagem(m: { wamid: string }) {
-    if ([...this.mensagens.values()].some((x) => x.wamid === m.wamid)) return Promise.resolve(null);
+  buscarUsuarioPorWhatsapp(numero: string) {
+    return Promise.resolve(this.publico(this.usuarios.find((u) => u.whatsapp === numero)));
+  }
+  buscarUsuarioPorTelegram(id: string) {
+    return Promise.resolve(this.publico(this.usuarios.find((u) => u.telegramId === id)));
+  }
+  vincularTelegram(codigo: string, id: string) {
+    const u = this.usuarios.find((x) => x.codigoVinculo === codigo);
+    if (!u || this.usuarios.some((x) => x.telegramId === id && x !== u)) return Promise.resolve(null);
+    u.telegramId = id;
+    u.codigoVinculo = null;
+    return Promise.resolve(this.publico(u));
+  }
+  registrarMensagem(m: { canal: Canal; idExterno: string }) {
+    if ([...this.mensagens.values()].some((x) => x.canal === m.canal && x.idExterno === m.idExterno)) {
+      return Promise.resolve(null);
+    }
     const id = `m${++this.seq}`;
-    this.mensagens.set(id, { id, wamid: m.wamid });
+    this.mensagens.set(id, { id, canal: m.canal, idExterno: m.idExterno });
     return Promise.resolve(id);
   }
   finalizarMensagem(id: string, d: { status: string; resposta?: string; erro?: string; interpretacao?: unknown }) {
@@ -111,7 +137,7 @@ export function interpretacao(parcial: Partial<Interpretacao>): Interpretacao {
 
 export function criarDeps(respostasIA: Interpretacao[] = []) {
   const repo = new RepoMemoria();
-  const enviadas: { para: string; texto: string; responderA?: string }[] = [];
+  const enviadas: { canal: Canal; para: string; texto: string }[] = [];
   const pedidosIA: ContextoInterpretacao[] = [];
   const logs: string[] = [];
   let id = 0;
@@ -124,9 +150,9 @@ export function criarDeps(respostasIA: Interpretacao[] = []) {
         return r ? Promise.resolve(r) : Promise.reject(new Error("IA indisponível"));
       },
     },
-    whatsapp: {
-      enviarTexto(p) {
-        enviadas.push(p);
+    mensageiro: {
+      responder(msg, texto) {
+        enviadas.push({ canal: msg.canal, para: msg.remetente, texto });
         return Promise.resolve();
       },
     },
@@ -138,7 +164,32 @@ export function criarDeps(respostasIA: Interpretacao[] = []) {
   return { deps, repo, enviadas, pedidosIA, logs };
 }
 
-let wamidSeq = 0;
+let seqMsg = 0;
+
+/** Mensagem de WhatsApp vinda do número cadastrado (por padrão). */
 export function mensagem(texto: string, de = "5511987654321"): MensagemRecebida {
-  return { wamid: `wamid.${++wamidSeq}`, de, nomePerfil: "Maria", tipo: "text", texto, phoneNumberId: "PHONE1" };
+  return {
+    canal: "whatsapp",
+    idExterno: `wamid.${++seqMsg}`,
+    remetente: de,
+    nomePerfil: "Maria",
+    tipo: "text",
+    texto,
+    phoneNumberId: "PHONE1",
+  };
+}
+
+/** Mensagem de Telegram em conversa privada. */
+export function mensagemTelegram(texto: string, usuarioId = "777000111"): MensagemRecebida {
+  const messageId = ++seqMsg;
+  return {
+    canal: "telegram",
+    idExterno: `${usuarioId}:${messageId}`,
+    remetente: usuarioId,
+    nomePerfil: "Maria",
+    tipo: "text",
+    texto,
+    chatId: Number(usuarioId),
+    messageId,
+  };
 }

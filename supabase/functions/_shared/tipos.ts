@@ -18,7 +18,7 @@ export type DataISO = string;
 export interface Usuario {
   id: string;
   nome: string;
-  whatsapp: string;
+  whatsapp: string | null;
   fusoHorario: string;
 }
 
@@ -74,10 +74,14 @@ export interface LinhaResumo {
 /** Acesso a dados. A implementação real usa Supabase; os testes usam memória. */
 export interface Repositorio {
   buscarUsuarioPorWhatsapp(numero: string): Promise<Usuario | null>;
-  /** Retorna o id da mensagem, ou null se esse wamid já foi recebido (reenvio da Meta). */
+  buscarUsuarioPorTelegram(telegramId: string): Promise<Usuario | null>;
+  /** Liga o Telegram ao usuário dono do código de vínculo (uso único). Null se o código não existe. */
+  vincularTelegram(codigo: string, telegramId: string): Promise<Usuario | null>;
+  /** Retorna o id da mensagem, ou null se ela já foi recebida (reenvio do canal). */
   registrarMensagem(m: {
     usuarioId: string;
-    wamid: string;
+    canal: Canal;
+    idExterno: string;
     tipo: string;
     texto: string | null;
   }): Promise<string | null>;
@@ -162,23 +166,26 @@ export interface Interpretador {
   interpretar(ctx: ContextoInterpretacao): Promise<Interpretacao>;
 }
 
-// ---------- WhatsApp ----------
+// ---------- Canais de mensagem ----------
 
-export interface MensagemRecebida {
-  wamid: string;
-  /** wa_id do remetente, como veio da Meta. Use este valor para responder. */
-  de: string;
+export type Canal = "whatsapp" | "telegram";
+
+interface MensagemBase {
+  /** Id único da mensagem no canal; garante que um reenvio não duplique lançamento. */
+  idExterno: string;
+  /** Quem enviou: wa_id no WhatsApp, id numérico do usuário no Telegram. */
+  remetente: string;
   nomePerfil: string | null;
+  /** "text" para texto; outros valores (audio, photo...) ainda não são entendidos. */
   tipo: string;
   texto: string | null;
-  phoneNumberId: string;
 }
 
-export interface EnviadorWhatsApp {
-  enviarTexto(p: {
-    phoneNumberId: string;
-    para: string;
-    texto: string;
-    responderA?: string;
-  }): Promise<void>;
+export type MensagemRecebida =
+  | (MensagemBase & { canal: "whatsapp"; phoneNumberId: string })
+  | (MensagemBase & { canal: "telegram"; chatId: number; messageId: number });
+
+/** Sabe responder a uma mensagem no mesmo canal em que ela chegou. */
+export interface Mensageiro {
+  responder(msg: MensagemRecebida, texto: string): Promise<void>;
 }

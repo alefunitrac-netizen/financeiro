@@ -1,8 +1,8 @@
-// Camada HTTP do webhook: valida a origem, responde rápido e processa em segundo plano.
+// Camada HTTP do webhook do WhatsApp: valida a origem, responde rápido e processa em segundo plano.
 import type { MensagemRecebida } from "./tipos.ts";
 import { assinaturaValida, extrairMensagens, respostaVerificacao } from "./whatsapp.ts";
 
-export interface OpcoesWebhook {
+export interface OpcoesWebhookWhatsApp {
   verifyToken: string;
   appSecret: string;
   processar: (m: MensagemRecebida) => Promise<void>;
@@ -11,7 +11,7 @@ export interface OpcoesWebhook {
   log: (evento: string, dados?: Record<string, unknown>) => void;
 }
 
-export function criarHandler(op: OpcoesWebhook): (req: Request) => Promise<Response> {
+export function criarHandlerWhatsApp(op: OpcoesWebhookWhatsApp): (req: Request) => Promise<Response> {
   return async (req) => {
     if (req.method === "GET") return respostaVerificacao(new URL(req.url), op.verifyToken);
     if (req.method !== "POST") return new Response("Método não permitido", { status: 405 });
@@ -37,7 +37,7 @@ export function criarHandler(op: OpcoesWebhook): (req: Request) => Promise<Respo
           try {
             await op.processar(m);
           } catch (e) {
-            op.log("erro_inesperado", { wamid: m.wamid, erro: e instanceof Error ? e.message : String(e) });
+            op.log("erro_inesperado", { id: m.idExterno, erro: e instanceof Error ? e.message : String(e) });
           }
         }
       })());

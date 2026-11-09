@@ -176,6 +176,12 @@ export function textoAjuda(nome: string): string {
 Errou? *desfazer* cancela o último registro e *corrigir: era 52* ajusta.`;
 }
 
+export function textoVinculado(nome: string): string {
+  return `✅ Pronto! Seu Telegram está ligado ao seu controle financeiro.\n\n${textoAjuda(nome)}`;
+}
+
+export const TEXTO_BOT_PRIVADO = "🔒 Este bot é privado.";
+
 export const TEXTO_SO_TEXTO =
   "Por enquanto eu só entendo mensagens de texto 🙂 Escreve o gasto, tipo: _almoço 35 no nubank_.";
 

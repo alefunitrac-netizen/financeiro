@@ -5,6 +5,10 @@ project_id = "financeiro"
 # A Meta não envia JWT do Supabase; a autenticação é a assinatura HMAC (X-Hub-Signature-256).
 verify_jwt = false
 
+[functions.telegram-webhook]
+# O Telegram não envia JWT; a autenticação é o cabeçalho X-Telegram-Bot-Api-Secret-Token.
+verify_jwt = false
+
 [edge_runtime]
 # Necessário para tarefas em segundo plano (EdgeRuntime.waitUntil) rodarem localmente.
 policy = "per_worker"
