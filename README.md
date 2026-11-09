@@ -109,7 +109,7 @@ Em **Supabase → Edge Functions → Secrets** (nunca no código nem no chat):
 | `WHATSAPP_ACCESS_TOKEN` | token permanente do System User |
 | `ANTHROPIC_API_KEY` | chave da API do Claude (<https://platform.claude.com>) |
 | `CLAUDE_MODEL` | opcional; padrão `claude-opus-5-5` |
-| `WHATSAPP_API_VERSION` | opcional; padrão `v23.0` |
+| `WHATSAPP_API_VERSION` | opcional; padrão `v25.0` |
 
 ### 4. Seu usuário e suas contas
 

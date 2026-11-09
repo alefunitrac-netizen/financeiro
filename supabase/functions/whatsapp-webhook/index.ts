@@ -38,7 +38,7 @@ const deps = {
   }),
   whatsapp: criarEnviadorWhatsApp({
     accessToken: env("WHATSAPP_ACCESS_TOKEN"),
-    versaoApi: env("WHATSAPP_API_VERSION") || "v23.0",
+    versaoApi: env("WHATSAPP_API_VERSION") || "v25.0",
   }),
   agora: () => new Date(),
   novoId: () => crypto.randomUUID(),
