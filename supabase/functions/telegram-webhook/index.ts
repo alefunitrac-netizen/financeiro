@@ -13,7 +13,7 @@ import {
   segredoDoWebhook,
 } from "../_shared/telegram.ts";
 
-avisarSeFaltar(["TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY"]);
+avisarSeFaltar(["TELEGRAM_BOT_TOKEN"]);
 
 const token = env("TELEGRAM_BOT_TOKEN");
 const segredo = token ? await segredoDoWebhook(token) : "";

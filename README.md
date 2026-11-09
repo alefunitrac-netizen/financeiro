@@ -57,11 +57,13 @@ supabase/
       telegram.ts              leitura, segredo, envio e configuração do bot
       whatsapp.ts  webhook_whatsapp.ts   assinatura, payload, envio, camada HTTP
       telefone.ts              normalização do número (nono dígito)
-      interpretador_claude.ts  prompt + saída estruturada com o Claude
+      interpretador_regras.ts  entende a mensagem por regras (grátis, sem IA)
+      interpretador_hibrido.ts regras primeiro; IA opcional como reserva
+      interpretador_claude.ts  prompt + saída estruturada com o Claude (opcional)
       repositorio_supabase.ts  acesso ao Postgres
       ambiente.ts              montagem comum das funções
       respostas.ts             textos do bot
-    tests/                     52 testes (sem rede, sem banco, sem IA)
+    tests/                     65 testes (sem rede, sem banco, sem IA)
 ```
 
 ## Rodando os testes
@@ -106,8 +108,9 @@ Em **Supabase → Edge Functions → Secrets** (nunca no código nem no chat):
 | Nome | Valor |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | token do @BotFather |
-| `ANTHROPIC_API_KEY` | chave da API do Claude (<https://platform.claude.com>) |
-| `CLAUDE_MODEL` | opcional; padrão `claude-opus-5-5` |
+| `ANTHROPIC_API_KEY` | opcional: chave da API do Claude, usada só nas frases que as regras não entendem |
+| `CLAUDE_MODEL` | opcional; padrão `claude-opus-5-5` (`claude-haiku-5-5` é ~40x mais barato) |
+| `INTERPRETADOR` | opcional; `regras` desliga a IA mesmo com chave |
 
 ### 4. Seu usuário, contas e vínculo do Telegram
 
@@ -148,8 +151,8 @@ Com a empresa verificada:
 - **Supabase:** plano gratuito.
 - **Telegram:** gratuito.
 - **WhatsApp:** respostas a mensagens que você enviou, dentro de 24h, não são cobradas.
-- **Claude:** cada mensagem custa frações de centavo de dólar; algumas centenas de lançamentos por mês saem por
-  poucos dólares. Para baratear, defina `CLAUDE_MODEL=claude-haiku-5-5`.
+- **Interpretação:** grátis. As regras entendem o jeito comum de anotar (`almoço 35 no nubank`, `uber 23 ontem`,
+  `tv 3000 em 10x`). A IA só entra, se houver chave com crédito, nas frases que as regras não entendem.
 
 ## Próximas fases
 

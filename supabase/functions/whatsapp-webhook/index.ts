@@ -5,7 +5,7 @@ import { processarMensagem } from "../_shared/processador.ts";
 import { criarHandlerWhatsApp } from "../_shared/webhook_whatsapp.ts";
 import { criarMensageiroWhatsApp } from "../_shared/whatsapp.ts";
 
-avisarSeFaltar(["WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_ACCESS_TOKEN", "ANTHROPIC_API_KEY"]);
+avisarSeFaltar(["WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_ACCESS_TOKEN"]);
 
 const deps = montarDependencias(
   criarMensageiroWhatsApp({

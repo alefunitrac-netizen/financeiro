@@ -182,6 +182,15 @@ export function textoVinculado(nome: string): string {
 
 export const TEXTO_BOT_PRIVADO = "🔒 Este bot é privado.";
 
+export const TEXTO_NAO_ENTENDI = `🤔 Não entendi. Escreve com o valor, assim:
+
+• _almoço 35 em dinheiro_
+• _uber 23 ontem no nubank_
+• _tv 3000 em 10x no itaú_
+• _recebi 5000 de salário_
+
+Ou peça: _resumo da semana_.`;
+
 export const TEXTO_SO_TEXTO =
   "Por enquanto eu só entendo mensagens de texto 🙂 Escreve o gasto, tipo: _almoço 35 no nubank_.";
 
