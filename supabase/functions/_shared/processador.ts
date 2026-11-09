@@ -50,7 +50,11 @@ export interface Dependencias {
   agora: () => Date;
   novoId: () => string;
   log: (evento: string, dados?: Record<string, unknown>) => void;
+  /** Open Finance (opcional): lê os bancos do usuário agora e devolve o texto da resposta. */
+  sincronizarBanco?: (usuarioId: string) => Promise<string>;
 }
+
+const COMANDOS_BANCO = ["atualizar", "atualiza", "sincronizar", "sincroniza", "banco", "atualizar banco"];
 
 const MAX_PARCELAS = 99;
 
@@ -289,6 +293,13 @@ async function resumir(pedido: Interpretacao["resumo"], ctx: Contexto): Promise<
 async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: string, deps: Dependencias) {
   if (msg.tipo !== "text" || !msg.texto?.trim()) {
     return { resultado: { texto: TEXTO_SO_TEXTO, status: "ignorada" as const }, interpretacao: null };
+  }
+
+  if (deps.sincronizarBanco && COMANDOS_BANCO.includes(normalizar(msg.texto))) {
+    return {
+      resultado: { texto: await deps.sincronizarBanco(usuario.id), status: "processada" as const },
+      interpretacao: null,
+    };
   }
 
   const hoje = hojeNoFuso(usuario.fusoHorario, deps.agora());

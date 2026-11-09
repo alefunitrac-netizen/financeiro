@@ -72,34 +72,51 @@ export function semMarcacao(s: string): string {
   return s.replace(/\*([^*\n]+)\*/g, "$1").replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,!?:;])/gm, "$1$2");
 }
 
-export function criarMensageiroTelegram(opcoes: { token: string; fetch?: typeof fetch }): Mensageiro {
+/**
+ * Envia uma mensagem para um chat. Tenta com formatação (HTML); se o Telegram recusar, manda
+ * texto puro. `responderA` cita a mensagem original.
+ */
+export async function enviarMensagemTelegram(opcoes: {
+  token: string;
+  chatId: number;
+  texto: string;
+  responderA?: number;
+  fetch?: typeof fetch;
+}): Promise<void> {
   const fazerFetch = opcoes.fetch ?? fetch;
-
-  async function enviar(corpo: Obj): Promise<Response> {
-    return await fazerFetch(`${API}/bot${opcoes.token}/sendMessage`, {
+  const base: Obj = { chat_id: opcoes.chatId, link_preview_options: { is_disabled: true } };
+  if (opcoes.responderA) {
+    base.reply_parameters = { message_id: opcoes.responderA, allow_sending_without_reply: true };
+  }
+  const enviar = (corpo: Obj) =>
+    fazerFetch(`${API}/bot${opcoes.token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(corpo),
     });
-  }
 
+  let resposta = await enviar({ ...base, text: paraHtmlTelegram(opcoes.texto), parse_mode: "HTML" });
+  if (resposta.status === 400) {
+    await resposta.body?.cancel();
+    resposta = await enviar({ ...base, text: semMarcacao(opcoes.texto) });
+  }
+  if (!resposta.ok) {
+    const detalhe = (await resposta.text()).slice(0, 500);
+    throw new Error(`Telegram respondeu ${resposta.status}: ${detalhe}`);
+  }
+}
+
+export function criarMensageiroTelegram(opcoes: { token: string; fetch?: typeof fetch }): Mensageiro {
   return {
     async responder(msg, texto) {
       if (msg.canal !== "telegram") throw new Error(`Mensageiro do Telegram não responde no canal ${msg.canal}`);
-      const base = {
-        chat_id: msg.chatId,
-        reply_parameters: { message_id: msg.messageId, allow_sending_without_reply: true },
-        link_preview_options: { is_disabled: true },
-      };
-      let resposta = await enviar({ ...base, text: paraHtmlTelegram(texto), parse_mode: "HTML" });
-      if (resposta.status === 400) {
-        await resposta.body?.cancel();
-        resposta = await enviar({ ...base, text: semMarcacao(texto) });
-      }
-      if (!resposta.ok) {
-        const detalhe = (await resposta.text()).slice(0, 500);
-        throw new Error(`Telegram respondeu ${resposta.status}: ${detalhe}`);
-      }
+      await enviarMensagemTelegram({
+        token: opcoes.token,
+        chatId: msg.chatId,
+        texto,
+        responderA: msg.messageId,
+        fetch: opcoes.fetch,
+      });
     },
   };
 }
@@ -155,16 +172,35 @@ export interface OpcoesWebhookTelegram {
   processar: (m: MensagemRecebida) => Promise<void>;
   emSegundoPlano: (tarefa: Promise<unknown>) => void;
   configurar: () => Promise<{ ok: boolean; bot?: string; erro?: string }>;
+  /** Rodada de sincronização com o banco (chamada pelo agendamento diário). */
+  sincronizar?: () => Promise<unknown>;
   log: (evento: string, dados?: Record<string, unknown>) => void;
 }
 
-/** Camada HTTP do webhook do Telegram. GET ?acao=configurar registra o webhook no Telegram. */
+/**
+ * Camada HTTP do webhook do Telegram.
+ * GET ?acao=configurar registra o webhook no Telegram; GET ?acao=sincronizar lê os bancos.
+ * As duas ações são idempotentes e a sincronização ignora rodadas muito próximas, então
+ * não há o que um curioso com a URL consiga estragar.
+ */
 export function criarHandlerTelegram(op: OpcoesWebhookTelegram): (req: Request) => Promise<Response> {
   return async (req) => {
     if (req.method === "GET") {
-      if (new URL(req.url).searchParams.get("acao") !== "configurar") return new Response("ok", { status: 200 });
-      const r = await op.configurar();
-      return Response.json(r, { status: r.ok ? 200 : 500 });
+      const acao = new URL(req.url).searchParams.get("acao");
+      if (acao === "configurar") {
+        const r = await op.configurar();
+        return Response.json(r, { status: r.ok ? 200 : 500 });
+      }
+      if (acao === "sincronizar") {
+        if (!op.sincronizar) return Response.json({ ok: false, erro: "Open Finance não configurado" }, { status: 503 });
+        try {
+          return Response.json({ ok: true, ...(await op.sincronizar() as object) });
+        } catch (e) {
+          op.log("erro_sincronizacao_geral", { erro: e instanceof Error ? e.message : String(e) });
+          return Response.json({ ok: false }, { status: 500 });
+        }
+      }
+      return new Response("ok", { status: 200 });
     }
     if (req.method !== "POST") return new Response("Método não permitido", { status: 405 });
 

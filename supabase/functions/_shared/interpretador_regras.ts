@@ -257,6 +257,11 @@ function acharCategoria(texto: string, tipos: TipoLancamento[], categorias: Cate
   return melhor?.nome ?? null;
 }
 
+/** Categoria de um texto qualquer (ex.: descrição que veio do banco, "IFD*IFOOD SAO PAULO"). */
+export function categoriaPorTexto(texto: string, tipo: TipoLancamento, categorias: Categoria[]): string | null {
+  return acharCategoria(chave(texto), [tipo], categorias);
+}
+
 const RE_VERBO_DESPESA = /\b(gastei|gasto|gastou|paguei|pago|pagou|comprei|comprou|transferi|mandei)\b/;
 const RE_RECEITA =
   /\b(recebi|recebido|recebemos|ganhei|entrou|entrada|caiu|salario|reembolso|estorno|rendimentos?|rendeu|dividendos?|vendi|freela|freelance|bonus|plr|decimo terceiro|cashback)\b/;

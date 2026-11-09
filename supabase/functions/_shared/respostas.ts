@@ -173,7 +173,8 @@ export function textoAjuda(nome: string): string {
 • _resumo da semana_
 • _quanto foi de mercado em outubro?_
 
-Errou? *desfazer* cancela o último registro e *corrigir: era 52* ajusta.`;
+Errou? *desfazer* cancela o último registro e *corrigir: era 52* ajusta.
+Com banco conectado, *atualizar* busca as novidades do banco.`;
 }
 
 export function textoVinculado(nome: string): string {

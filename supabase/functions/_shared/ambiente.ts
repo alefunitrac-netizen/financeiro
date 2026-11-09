@@ -1,5 +1,5 @@
 // O que as duas funções (WhatsApp e Telegram) montam igual: variáveis, log, banco, IA e segundo plano.
-import { createClient } from "npm:@supabase/supabase-js@2.119.0";
+import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.119.0";
 import { criarInterpretadorClaude } from "./interpretador_claude.ts";
 import { criarInterpretadorHibrido } from "./interpretador_hibrido.ts";
 import { criarRepositorioSupabase } from "./repositorio_supabase.ts";
@@ -26,10 +26,13 @@ function chaveSecretaSupabase(): string {
   return env("SUPABASE_SERVICE_ROLE_KEY");
 }
 
-export function montarDependencias(mensageiro: Mensageiro): Dependencias {
-  const db = createClient(env("SUPABASE_URL"), chaveSecretaSupabase(), {
+export function criarClienteBanco(): SupabaseClient {
+  return createClient(env("SUPABASE_URL"), chaveSecretaSupabase(), {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+export function montarDependencias(mensageiro: Mensageiro, db: SupabaseClient = criarClienteBanco()): Dependencias {
   // A IA é opcional: sem ANTHROPIC_API_KEY (ou com INTERPRETADOR=regras), o bot usa só as regras.
   const apiKey = env("ANTHROPIC_API_KEY");
   const usarIa = apiKey && env("INTERPRETADOR") !== "regras";

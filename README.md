@@ -47,6 +47,8 @@ supabase/
   migrations/
     20261107120000_schema_inicial.sql   esquema, gatilhos, função de resumo, RLS
     20261109120000_canal_telegram.sql   usuário com Telegram; mensagens por canal
+    20261109130000_origem_telegram.sql  origem 'telegram' nas transações
+    20261109140000_open_finance.sql     conexões com o banco, saldo, unicidade do external_id
   functions/
     telegram-webhook/index.ts           entrada do Telegram
     whatsapp-webhook/index.ts           entrada do WhatsApp
@@ -63,7 +65,9 @@ supabase/
       repositorio_supabase.ts  acesso ao Postgres
       ambiente.ts              montagem comum das funções
       respostas.ts             textos do bot
-    tests/                     65 testes (sem rede, sem banco, sem IA)
+      open_finance.ts          Pluggy: contas, transações, conferência e sincronização
+      repositorio_banco.ts     acesso ao Postgres para a sincronização
+    tests/                     74 testes (sem rede, sem banco, sem IA)
 ```
 
 ## Rodando os testes
@@ -132,6 +136,31 @@ O código vale uma vez. Para ligar outra conta do Telegram, gere um código novo
 update usuarios set codigo_vinculo = replace(gen_random_uuid()::text, '-', '')
 where nome = 'Seu Nome' returning codigo_vinculo;
 ```
+
+## Open Finance (Pluggy, uso pessoal e gratuito)
+
+1. Conecte seus bancos em <https://meu.pluggy.ai>.
+2. Em <https://dashboard.pluggy.ai> (mesma conta): **Applications → sua aplicação → Demo → Connect Account →
+   MeuPluggy**. Cada banco vira um *item*; copie o **itemId** em *Connected Items*.
+3. Segredos da função: `PLUGGY_CLIENT_ID` e `PLUGGY_CLIENT_SECRET` (em *Applications*).
+4. Cadastre cada item:
+
+```sql
+insert into conexoes_banco (usuario_id, item_id)
+select id, '<itemId>' from usuarios where nome = 'Seu Nome';
+```
+
+5. Publique a função de novo e agende a leitura (2x por dia):
+
+```sql
+select cron.schedule('sincronizar-banco', '13 13,23 * * *',
+  $$ select net.http_get('https://<ref-do-projeto>.supabase.co/functions/v1/telegram-webhook?acao=sincronizar') $$);
+```
+
+Como funciona: a cada leitura (60 dias para trás e as parcelas futuras), o que você informou e o banco confirmou
+vira um lançamento só (valor e data do banco, sua descrição e categoria); o resto entra como novo, categorizado pelas
+mesmas regras do bot; o que sumiu do banco é desfeito. No Telegram, *atualizar* lê na hora. A autorização do
+Meu Pluggy dura 1 ano; o bot avisa 30 dias antes.
 
 ## WhatsApp (opcional)
 
