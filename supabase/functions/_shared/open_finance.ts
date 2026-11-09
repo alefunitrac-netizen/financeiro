@@ -127,6 +127,39 @@ export interface DadosContaBanco {
   saldoCentavos: number | null;
 }
 
+const BANCOS: [RegExp, string][] = [
+  [/\bitau\b/, "Itaú"],
+  [/\bnubank\b|\bnu pagamentos\b/, "Nubank"],
+  [/\bbradesco\b/, "Bradesco"],
+  [/\bsantander\b/, "Santander"],
+  [/\bbanco do brasil\b|\bbb\b/, "Banco do Brasil"],
+  [/\bcaixa\b/, "Caixa"],
+  [/\binter\b/, "Inter"],
+  [/\bc6\b/, "C6 Bank"],
+  [/\bbtg\b/, "BTG"],
+  [/\bxp\b/, "XP"],
+  [/\bpicpay\b/, "PicPay"],
+  [/\bmercado pago\b/, "Mercado Pago"],
+  [/\bsicoob\b/, "Sicoob"],
+  [/\bsicredi\b/, "Sicredi"],
+  [/\bneon\b/, "Neon"],
+  [/\bpagbank\b|\bpagseguro\b/, "PagBank"],
+  [/\bsafra\b/, "Safra"],
+  [/\bbanrisul\b/, "Banrisul"],
+];
+
+/**
+ * Banco de uma conta. Pelo Meu Pluggy o conector se chama "MeuPluggy" e um item pode trazer
+ * vários bancos, então o banco sai do nome da conta ("itau", "Itaú Click Múltiplo MC Plat").
+ */
+export function instituicaoDaConta(c: ContaPluggy, nomeConector?: string | null): string {
+  const k = chave(`${c.name ?? ""} ${c.marketingName ?? ""}`);
+  for (const [re, nome] of BANCOS) if (re.test(k)) return nome;
+  if (nomeConector && !/pluggy/i.test(nomeConector)) return nomeConector;
+  const nome = (c.name ?? "").trim();
+  return nome ? nome[0].toUpperCase() + nome.slice(1) : "Banco";
+}
+
 /** A Pluggy manda reais com casas decimais (47.9); aqui tudo é centavo inteiro. */
 const emCentavos = (v: number) => Math.round(v * 100);
 const diaDe = (data?: string | null) => (data && /^\d{4}-\d{2}-\d{2}/.test(data) ? Number(data.slice(8, 10)) : null);
@@ -339,9 +372,9 @@ export async function sincronizarConexao(
   const avisos: string[] = [];
 
   const item = await pluggy.item(conexao.itemId);
-  const instituicao = item.connector?.name || conexao.instituicao || "Banco";
+  const conector = item.connector?.name ?? null;
   if (item.error?.code || item.status === "LOGIN_ERROR" || item.status === "OUTDATED") {
-    avisos.push(`⚠️ A conexão com o ${instituicao} está com problema (${item.error?.code ?? item.status}). ` +
+    avisos.push(`⚠️ A conexão ${conector ? `${conector} ` : ""}está com problema (${item.error?.code ?? item.status}). ` +
       "Abra o Meu Pluggy e reconecte.");
   }
   if (item.consentExpiresAt) {
@@ -355,10 +388,13 @@ export async function sincronizarConexao(
   const categorias = await repo.listarCategorias(conexao.usuarioId);
   const porNome = new Map(categorias.map((c) => [c.nome, c]));
   const informados = await repo.informadosParaConciliar(conexao.usuarioId, somarDias(de, -5), somarDias(ate, 5));
-  const resultado: ResultadoSincronizacao = { instituicao, novas: [], confirmadas: 0, canceladas: 0, avisos };
+  const resultado: ResultadoSincronizacao = { instituicao: "", novas: [], confirmadas: 0, canceladas: 0, avisos };
+  const bancos = new Set<string>();
 
   for (const cp of await pluggy.contas(conexao.itemId)) {
-    const conta = await repo.salvarConta(conexao.usuarioId, mapearConta(cp, instituicao));
+    const banco = instituicaoDaConta(cp, conector);
+    bancos.add(banco);
+    const conta = await repo.salvarConta(conexao.usuarioId, mapearConta(cp, banco));
     const doBanco = (await pluggy.transacoes(cp.id, de, ate))
       .map((t) => mapearTransacao(t, conta))
       .filter((t): t is TransacaoBanco => t !== null);
@@ -406,8 +442,9 @@ export async function sincronizarConexao(
     );
   }
 
+  resultado.instituicao = [...bancos].join(", ") || conexao.instituicao || conector || "Banco";
   await repo.registrarSincronizacao(conexao.id, {
-    instituicao,
+    instituicao: resultado.instituicao,
     status: item.status ?? null,
     consentimentoExpiraEm: item.consentExpiresAt ?? null,
     erro: null,

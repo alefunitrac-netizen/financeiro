@@ -10,6 +10,7 @@ import {
   type DadosContaBanco,
   dataDoBanco,
   type Informado,
+  instituicaoDaConta,
   mapearConta,
   mapearTransacao,
   type NovaDoBanco,
@@ -75,6 +76,25 @@ Deno.test("contas: cartão com fechamento/vencimento/limite; corrente com apelid
 
   const semDatas = mapearConta({ ...CARTAO, creditData: { balanceCloseDate: "2026-11-03" } }, "Itaú");
   assert.equal(semDatas.diaFechamento, null); // sem os dois, nenhum
+});
+
+Deno.test("banco de cada conta pelo Meu Pluggy: o conector se chama MeuPluggy, o banco vem da conta", () => {
+  assert.equal(instituicaoDaConta({ ...CORRENTE, name: "itau" }, "MeuPluggy"), "Itaú");
+  assert.equal(instituicaoDaConta(CARTAO, "MeuPluggy"), "Itaú");
+  assert.equal(instituicaoDaConta({ ...CORRENTE, name: "Nubank" }, "MeuPluggy"), "Nubank");
+  assert.equal(instituicaoDaConta({ ...CORRENTE, name: "Conta Corrente" }, "Bradesco"), "Bradesco");
+  assert.equal(instituicaoDaConta({ ...CORRENTE, name: "banco desconhecido" }, "MeuPluggy"), "Banco desconhecido");
+});
+
+Deno.test("sincronização pelo Meu Pluggy dá às contas o nome do banco, não do conector", async () => {
+  const repo = new RepoBancoMemoria();
+  const pluggy: ClientePluggy = {
+    ...pluggyFalsa({}, { connector: { name: "MeuPluggy" } }),
+    contas: () => Promise.resolve([CARTAO, { ...CORRENTE, name: "itau" }]),
+  };
+  const r = await sincronizarConexao(repo.conexoes[0], { repo, pluggy, agora: AGORA });
+  assert.equal(r.instituicao, "Itaú");
+  assert.deepEqual([...repo.contas.values()].map((c) => c.nome).sort(), ["Cartão Itaú final 7669", "Itaú"]);
 });
 
 Deno.test("datas do banco: meia-noite UTC é o próprio dia; com hora, vira horário de Brasília", () => {
