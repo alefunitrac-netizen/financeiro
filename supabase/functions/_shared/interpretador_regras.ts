@@ -3,6 +3,10 @@
 // Quando não entende, devolve null e quem chamou decide (IA, se houver, ou pedir para reescrever).
 import { dataValida, diasNoMes, somarDias, somarMeses } from "./datas.ts";
 import { paraCentavos } from "./dinheiro.ts";
+import { acharBanco } from "./bancos.ts";
+import { chave } from "./texto.ts";
+
+export { chave };
 import type {
   Categoria,
   Conta,
@@ -10,6 +14,8 @@ import type {
   DataISO,
   Interpretacao,
   LancamentoInterpretado,
+  Meio,
+  PedidoFatura,
   PedidoResumo,
   TipoLancamento,
 } from "./tipos.ts";
@@ -91,7 +97,8 @@ const VAZIAS = new Set(
   ("gastei gasto gastou paguei pago pagou paga comprei compra comprou recebi recebido ganhei entrou caiu foi foram " +
     "de do da dos das no na nos nas em com pra pro pras pros para por pelo pela o a os as um uma uns umas reais real " +
     "conto contos pila pilas e cartao conta credito debito via valor total meu minha meus minhas ai la aqui so " +
-    "era as ao aos").split(" "),
+    "era as ao aos adicionar adiciona adicione add lancar lanca lance registrar registra registre anota anotar " +
+    "anote coloca colocar coloque parcela parcelas parcelado parcelada").split(" "),
 );
 
 const DIAS_SEMANA = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
@@ -101,17 +108,6 @@ const MESES = [
 ];
 
 // ---------- Texto ----------
-
-/** Minúsculas e sem acento, com o MESMO comprimento do original (para recortar o original pelos índices). */
-export function chave(texto: string): string {
-  let saida = "";
-  for (const ch of texto) {
-    let base = ch.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-    if (base.length !== ch.length) base = " ".repeat(ch.length);
-    saida += base;
-  }
-  return saida;
-}
 
 const escapar = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const frase = (s: string) => escapar(s.trim()).replace(/\s+/g, String.raw`\s+`);
@@ -236,6 +232,36 @@ function tirarConta(t: Texto, contas: Conta[]): Conta | null {
   return melhor.conta;
 }
 
+/**
+ * Banco citado que ainda não é uma conta sua ("no nubank" sem Nubank cadastrado). Devolve o nome
+ * oficial; quem registra cria a conta.
+ */
+function tirarBanco(t: Texto): string | null {
+  const b = acharBanco(t.livre, true);
+  if (!b) return null;
+  // Leva junto o "no cartão do", "na conta da"... que vem antes do nome.
+  const antes = t.livre.slice(0, b.inicio);
+  const prefixo = /(?:\b(?:no|na|em|pelo|pela|via|com|do|da)\s+)?(?:\b(?:cartao|conta|debito|credito)\s+(?:(?:do|da|de)\s+)?)?$/
+    .exec(antes);
+  t.consumir(b.inicio - (prefixo?.[0].length ?? 0), b.fim);
+  return b.nome;
+}
+
+/** Conta cadastrada ou banco conhecido citado no texto. */
+function tirarContaOuBanco(t: Texto, contas: Conta[]): string | null {
+  return tirarConta(t, contas)?.nome ?? tirarBanco(t);
+}
+
+const RE_MEIO_CREDITO = /\b(cartao|credito|fatura)\b/;
+const RE_MEIO_DEBITO = /\b(debito|pix|ted|boleto|transferencia|transferi)\b/;
+
+/** Como foi pago, pelas palavras usadas. Débito/Pix explícito vence "cartão" ("cartão de débito"). */
+function meioDe(k: string, parcelado = false): Meio | null {
+  if (RE_MEIO_DEBITO.test(k)) return "debito";
+  if (RE_MEIO_CREDITO.test(k) || parcelado) return "credito";
+  return null;
+}
+
 /** Procura a categoria pelas palavras do dicionário e pelos próprios nomes das categorias do usuário. */
 function acharCategoria(texto: string, tipos: TipoLancamento[], categorias: Categoria[]): string | null {
   let melhor: { nome: string; tamanho: number; posicao: number } | null = null;
@@ -271,7 +297,7 @@ function tipoDe(k: string): TipoLancamento {
 }
 
 /** O que sobrou do texto, sem as palavras de ligação, vira a descrição ("gastei 45 no ifood" → "iFood"). */
-function descricaoDe(t: Texto, categoria: string, tipo: TipoLancamento): string {
+function descricaoDe(t: Texto, categoria: string, tipo: TipoLancamento, parcelado = false): string {
   const borda = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
   const palavras: string[] = [];
   for (const m of t.livre.matchAll(/\S+/g)) {
@@ -280,7 +306,15 @@ function descricaoDe(t: Texto, categoria: string, tipo: TipoLancamento): string 
     palavras.push(t.original.slice(m.index!, m.index! + m[0].length).replace(borda, ""));
   }
   let d = palavras.join(" ").trim().slice(0, 80);
-  if (!d) d = ["Outros", "Outras receitas"].includes(categoria) ? (tipo === "receita" ? "Receita" : "Gasto") : categoria;
+  if (!d) {
+    d = !["Outros", "Outras receitas"].includes(categoria)
+      ? categoria
+      : tipo === "receita"
+      ? "Receita"
+      : parcelado
+      ? "Compra parcelada"
+      : "Gasto";
+  }
   const marca = MARCAS[chave(d)];
   if (marca) return marca;
   return d.length <= 2 ? d.toUpperCase() : d[0].toUpperCase() + d.slice(1);
@@ -293,7 +327,7 @@ const RE_CORRIGIR = /^\W*(?:corrigir|corrige|corrija|corrigi|correcao|corrigindo
 const RE_DESFAZER =
   /\b(desfaz|desfazer|desfaca|cancela|cancelar|cancele|apaga|apagar|apague|exclui|excluir|exclua|remove|remover|deleta|deletar)\b/;
 const RE_RESUMO =
-  /\b(resumo|extrato|balanco|relatorio|quanto\s+(?:eu\s+)?(?:gastei|gasto|paguei|recebi|ganhei|entrou|saiu|foi|deu)|total\s+(?:de|do|da|gasto)|gastos?\s+(?:de|do|da|dos|das|com|na|no|em|esse|este|nesse|neste))\b/;
+  /\b(resumo|extrato|balanco|relatorio|por\s+(?:banco|bancos|conta|contas|cartao|cartoes)|quanto\s+(?:eu\s+)?(?:gastei|gasto|paguei|recebi|ganhei|entrou|saiu|foi|deu)|total\s+(?:de|do|da|gasto)|gastos?\s+(?:de|do|da|dos|das|com|na|no|em|esse|este|nesse|neste))\b/;
 const RE_AJUDA = /\b(ajuda|socorro|como\s+(?:funciona|usa|usar|uso)|o\s+que\s+(?:voce|vc)\s+(?:faz|sabe)|comandos|exemplos?)\b/;
 
 function lerLancamento(segmento: string, ctx: ContextoInterpretacao): LancamentoInterpretado | null {
@@ -316,21 +350,22 @@ function lerLancamento(segmento: string, ctx: ContextoInterpretacao): Lancamento
   if (centavos === null) return null;
   if (parcelas !== null && parcelas < 2) parcelas = null;
 
-  const conta = tirarConta(t, ctx.contas);
+  const conta = tirarContaOuBanco(t, ctx.contas);
   const tipo = tipoDe(chave(segmento));
   const categoria = acharCategoria(t.livre, [tipo], ctx.categorias) ??
     (tipo === "receita" ? "Outras receitas" : "Outros");
 
   return {
     tipo,
-    descricao: descricaoDe(t, categoria, tipo),
+    descricao: descricaoDe(t, categoria, tipo, parcelas !== null),
     estabelecimento: null,
     valor: centavosEmTexto(centavos),
     valor_refere_se_a: refere,
     parcelas,
     data,
-    conta: conta?.nome ?? null,
+    conta,
     categoria,
+    meio: tipo === "despesa" ? meioDe(chave(segmento), parcelas !== null) : null,
   };
 }
 
@@ -344,7 +379,10 @@ function dividir(texto: string, ctx: ContextoInterpretacao): string[] {
 function pedidoResumo(texto: string, ctx: ContextoInterpretacao): PedidoResumo {
   const k = chave(texto);
   const categoria = acharCategoria(k, ["despesa", "receita"], ctx.categorias);
-  const base = { inicio: null, fim: null, categoria };
+  // "quanto gastei no nubank?" filtra a conta; "resumo por banco" não (é só o jeito de agrupar).
+  const semAgrupamento = new Texto(texto.replace(/\bpor\s+\S+/gi, (m) => " ".repeat(m.length)));
+  const conta = /\b(contas|bancos|cartoes)\b/.test(k) ? null : tirarContaOuBanco(semAgrupamento, ctx.contas);
+  const base = { inicio: null, fim: null, categoria, conta };
   if (/\b(mes\s+passado|mes\s+anterior|ultimo\s+mes)\b/.test(k)) return { periodo: "mes_anterior", ...base };
 
   const mes = new RegExp(String.raw`\b(${MESES.join("|")})(?:\s+(?:de\s+)?(\d{4}))?\b`).exec(k);
@@ -352,21 +390,29 @@ function pedidoResumo(texto: string, ctx: ContextoInterpretacao): PedidoResumo {
     const [a, m] = partes(ctx.hoje);
     const numero = MESES.indexOf(mes[1]) + 1;
     const ano = mes[2] ? Number(mes[2]) : numero > m ? a - 1 : a;
-    return { periodo: "intervalo", inicio: iso(ano, numero, 1), fim: iso(ano, numero, diasNoMes(ano, numero)), categoria };
+    return {
+      periodo: "intervalo",
+      inicio: iso(ano, numero, 1),
+      fim: iso(ano, numero, diasNoMes(ano, numero)),
+      categoria,
+      conta,
+    };
   }
   if (/\bsemana\b/.test(k)) return { periodo: "semana", ...base };
   if (/\bontem\b/.test(k)) return { periodo: "ontem", ...base };
   if (/\bhoje\b/.test(k)) return { periodo: "hoje", ...base };
   const dia = tirarData(new Texto(texto), ctx.hoje);
-  if (dia) return { periodo: "intervalo", inicio: dia, fim: dia, categoria };
+  if (dia) return { periodo: "intervalo", inicio: dia, fim: dia, categoria, conta };
   return { periodo: "mes_atual", ...base };
 }
 
 function lerCorrecao(texto: string, ctx: ContextoInterpretacao): Interpretacao {
   const t = new Texto(texto);
   t.tirar(RE_CORRIGIR);
+  t.tirar(RE_INICIO_CORRECAO);
+  const meio = meioDe(t.livre);
   const data = tirarData(t, ctx.hoje);
-  const conta = tirarConta(t, ctx.contas);
+  const conta = tirarContaOuBanco(t, ctx.contas);
   const centavos = tirarValor(t);
   const categoria = acharCategoria(t.livre, ["despesa", "receita"], ctx.categorias);
   return {
@@ -375,11 +421,96 @@ function lerCorrecao(texto: string, ctx: ContextoInterpretacao): Interpretacao {
     correcao: {
       valor: centavos === null ? null : centavosEmTexto(centavos),
       data,
-      conta: conta?.nome ?? null,
+      conta,
       categoria,
       descricao: null,
+      meio,
     },
   };
+}
+
+const correcaoVazia = (i: Interpretacao) => !i.correcao || Object.values(i.correcao).every((v) => v === null);
+
+// "era 52", "na verdade foi no itaú": correção do último lançamento, mesmo com valor.
+const RE_INICIO_CORRECAO = /^\W*(?:era|na\s+verdade|ops|opa|errei|errado|foi)\b[\s,:]*/;
+const RE_ERA = /^\W*(?:era|na\s+verdade|ops|opa|errei|errado)\b/;
+// "foi no nubank", "no débito", "foi ontem": sem valor, fala de onde/quando foi.
+const RE_SO_LUGAR = /^\W*(?:foi\s+)?(?:no|na|em|pelo|pela|via|com)\b|^\W*foi\b/;
+
+// "essa parcela foi em qual banco?", "qual foi o último?"
+const RE_ULTIMO =
+  /\b(?:qual|que|onde)\b.*\b(?:banco|conta|cartao|categoria)\b|\b(?:ultimo|ultima)\s+(?:lancamento|registro|gasto|compra)\b|\bo\s+que\s+(?:eu\s+)?(?:registrei|lancei|anotei)\b|\bqual\s+foi\s+o\s+ultimo\b/;
+
+// "saldo", "minhas contas", "como está a fatura?"
+const RE_CONTAS = /\b(saldos?|minhas\s+contas|contas|faturas?|limites?)\b/;
+
+// ---------- Fatura do cartão ----------
+
+const RE_FECHA = /\b(?:fecha|fechamento|fechando)\s*(?:e\s+)?(?:em\s+|no\s+)?(?:dia\s+)?(\d{1,2})\b/;
+const RE_VENCE =
+  /\b(?:que\s+)?(?:vence|vencimento|vencendo|vcto|venc)\s*(?::\s*)?(?:em\s+|no\s+|na\s+)?(?:dia\s+)?(\d{1,2})(?:\/(\d{1,2})(?:\/(\d{4}|\d{2}))?)?\b/;
+const RE_PAGUEI = /\b(paguei|pago|paga|quitei|quitado|quitada)\b/;
+
+/** Próxima data com esse dia (hoje conta), ou a data dd/mm[/aaaa] dita. Vencimento é sempre para frente. */
+function dataDeVencimento(hoje: DataISO, dia: number, mes?: number, ano?: number): DataISO | null {
+  const [a, m, d] = partes(hoje);
+  if (dia < 1 || dia > 31) return null;
+  if (mes) {
+    let data = iso(ano ?? a, mes, dia);
+    if (!dataValida(data)) return null;
+    if (!ano && data < somarDias(hoje, -5)) data = iso(a + 1, mes, dia);
+    return dataValida(data) ? data : null;
+  }
+  const esteMes = iso(a, m, Math.min(dia, diasNoMes(a, m)));
+  return dia >= d ? esteMes : somarMeses(iso(a, m, 1), 1, dia);
+}
+
+function tirarVencimento(t: Texto, hoje: DataISO): DataISO | null {
+  const r = t.tirar(RE_VENCE);
+  if (!r) return null;
+  const ano = r[3] ? (r[3].length === 2 ? 2000 + Number(r[3]) : Number(r[3])) : undefined;
+  return dataDeVencimento(hoje, Number(r[1]), r[2] ? Number(r[2]) : undefined, ano);
+}
+
+/** "fatura nubank 1547", "fatura do itaú 820 vence dia 15", "paguei a fatura do nubank 1547". */
+function lerFatura(texto: string, ctx: ContextoInterpretacao): Interpretacao | null {
+  const t = new Texto(texto);
+  const vencimento = tirarVencimento(t, ctx.hoje);
+  t.tirar(RE_FECHA);
+  const conta = tirarContaOuBanco(t, ctx.contas);
+  tirarData(t, ctx.hoje);
+  const centavos = tirarValor(t);
+  if (centavos === null && !vencimento) return null;
+  const fatura: PedidoFatura = {
+    conta,
+    valor: centavos === null ? null : centavosEmTexto(centavos),
+    vencimento,
+    paga: RE_PAGUEI.test(chave(texto)),
+  };
+  return { intencao: "fatura", ...VAZIO, fatura };
+}
+
+/** "nubank fecha dia 3 e vence dia 10". */
+function lerCartao(texto: string, ctx: ContextoInterpretacao): Interpretacao | null {
+  const t = new Texto(texto);
+  const fecha = t.tirar(RE_FECHA);
+  const vence = t.tirar(RE_VENCE);
+  if (!fecha || !vence) return null;
+  const diaFechamento = Number(fecha[1]);
+  const diaVencimento = Number(vence[1]);
+  if (diaFechamento < 1 || diaFechamento > 31 || diaVencimento < 1 || diaVencimento > 31) return null;
+  return {
+    intencao: "configurar_cartao",
+    ...VAZIO,
+    cartao: { conta: tirarContaOuBanco(t, ctx.contas), diaFechamento, diaVencimento },
+  };
+}
+
+/** "nubank", "cartão itaú", "débito": a mensagem é só uma conta ou um meio de pagamento. */
+function ehSoContaOuMeio(texto: string, ctx: ContextoInterpretacao): boolean {
+  const t = new Texto(texto);
+  const achou = tirarContaOuBanco(t, ctx.contas) !== null || t.tirar(/\b(?:no\s+|na\s+)?(?:debito|credito|pix)\b/) !== null;
+  return achou && !/[\p{L}\p{N}]/u.test(t.livre.replace(/\b(foi|e|o|a)\b/g, ""));
 }
 
 /** Entende a mensagem por regras. Devolve null quando não tem certeza do que ela pede. */
@@ -389,13 +520,32 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
   const k = chave(texto);
 
   if (RE_CORRIGIR.test(k)) return lerCorrecao(texto, ctx);
+  if (RE_FECHA.test(k) && RE_VENCE.test(k)) {
+    const cartao = lerCartao(texto, ctx);
+    if (cartao) return cartao;
+  }
+  if (/\bfatura\b/.test(k)) {
+    const fatura = lerFatura(texto, ctx);
+    if (fatura) return fatura;
+  }
+  if (RE_ERA.test(k)) {
+    const c = lerCorrecao(texto, ctx);
+    if (!correcaoVazia(c)) return c;
+  }
 
   const lancamentos = dividir(texto, ctx).map((s) => lerLancamento(s, ctx));
   const temValor = lancamentos.every((l) => l !== null);
   if (!temValor) {
     if (RE_DESFAZER.test(k)) return { intencao: "desfazer", ...VAZIO };
+    if (RE_ULTIMO.test(k)) return { intencao: "ultimo", ...VAZIO };
     if (RE_RESUMO.test(k)) return { intencao: "resumo", ...VAZIO, resumo: pedidoResumo(texto, ctx) };
+    if (RE_CONTAS.test(k)) return { intencao: "contas", ...VAZIO };
     if (RE_AJUDA.test(k)) return { intencao: "ajuda", ...VAZIO };
+    // Sem valor, só dizendo onde ou quando foi: é sobre o último lançamento.
+    if (RE_SO_LUGAR.test(k) || ehSoContaOuMeio(texto, ctx)) {
+      const c = lerCorrecao(texto, ctx);
+      if (!correcaoVazia(c)) return c;
+    }
     return null;
   }
   return { intencao: "registrar", ...VAZIO, lancamentos: lancamentos as LancamentoInterpretado[] };

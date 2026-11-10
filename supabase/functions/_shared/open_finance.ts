@@ -4,7 +4,9 @@
 // DESCRIÇÃO e da CATEGORIA. Por isso, ao confirmar um lançamento seu, mantemos o seu texto.
 import { dataAmigavel, hojeNoFuso, somarDias, vencimentoFatura } from "./datas.ts";
 import { formatarReais } from "./dinheiro.ts";
-import { categoriaPorTexto, chave } from "./interpretador_regras.ts";
+import { bancoDoTexto } from "./bancos.ts";
+import { categoriaPorTexto } from "./interpretador_regras.ts";
+import { chave } from "./texto.ts";
 import type { Categoria, DataISO, TipoConta } from "./tipos.ts";
 
 const API = "https://api.pluggy.ai";
@@ -138,34 +140,14 @@ export interface DadosContaBanco {
   saldoCentavos: number | null;
 }
 
-const BANCOS: [RegExp, string][] = [
-  [/\bitau\b/, "Itaú"],
-  [/\bnubank\b|\bnu pagamentos\b/, "Nubank"],
-  [/\bbradesco\b/, "Bradesco"],
-  [/\bsantander\b/, "Santander"],
-  [/\bbanco do brasil\b|\bbb\b/, "Banco do Brasil"],
-  [/\bcaixa\b/, "Caixa"],
-  [/\binter\b/, "Inter"],
-  [/\bc6\b/, "C6 Bank"],
-  [/\bbtg\b/, "BTG"],
-  [/\bxp\b/, "XP"],
-  [/\bpicpay\b/, "PicPay"],
-  [/\bmercado pago\b/, "Mercado Pago"],
-  [/\bsicoob\b/, "Sicoob"],
-  [/\bsicredi\b/, "Sicredi"],
-  [/\bneon\b/, "Neon"],
-  [/\bpagbank\b|\bpagseguro\b/, "PagBank"],
-  [/\bsafra\b/, "Safra"],
-  [/\bbanrisul\b/, "Banrisul"],
-];
 
 /**
  * Banco de uma conta. Pelo Meu Pluggy o conector se chama "MeuPluggy" e um item pode trazer
  * vários bancos, então o banco sai do nome da conta ("itau", "Itaú Click Múltiplo MC Plat").
  */
 export function instituicaoDaConta(c: ContaPluggy, nomeConector?: string | null): string {
-  const k = chave(`${c.name ?? ""} ${c.marketingName ?? ""}`);
-  for (const [re, nome] of BANCOS) if (re.test(k)) return nome;
+  const banco = bancoDoTexto(`${c.name ?? ""} ${c.marketingName ?? ""}`);
+  if (banco) return banco;
   if (nomeConector && !/pluggy/i.test(nomeConector)) return nomeConector;
   const nome = (c.name ?? "").trim();
   return nome ? nome[0].toUpperCase() + nome.slice(1) : "Banco";

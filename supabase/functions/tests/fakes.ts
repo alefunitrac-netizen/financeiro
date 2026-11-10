@@ -7,8 +7,11 @@ import type {
   Conta,
   ContextoInterpretacao,
   Interpretacao,
+  LinhaFatura,
   LinhaResumo,
+  LinhaResumoConta,
   MensagemRecebida,
+  NovaConta,
   NovaTransacao,
   Repositorio,
   Transacao,
@@ -40,8 +43,8 @@ export const CATEGORIAS: Categoria[] = [
   { id: "k-outrasr", nome: "Outras receitas", tipo: "receita" },
 ];
 
-interface TransacaoMem extends Transacao {
-  status: "informado" | "cancelado";
+interface TransacaoMem extends Omit<Transacao, "status"> {
+  status: "informado" | "confirmado" | "cancelado";
   ordem: number;
 }
 
@@ -57,6 +60,7 @@ export class RepoMemoria implements Repositorio {
     { id: string; canal: Canal; idExterno: string; status?: string; resposta?: string; erro?: string; interpretacao?: unknown }
   >();
   transacoes: TransacaoMem[] = [];
+  contas: Conta[] = CONTAS.map((c) => ({ ...c }));
   private seq = 0;
 
   private publico(u: UsuarioMem | undefined): Usuario | null {
@@ -88,14 +92,35 @@ export class RepoMemoria implements Repositorio {
     return Promise.resolve();
   }
   listarContas() {
-    return Promise.resolve(CONTAS);
+    return Promise.resolve(this.contas.map((c) => ({ ...c })));
+  }
+  criarConta(_u: string, d: NovaConta) {
+    const c: Conta = { id: `c${++this.seq}`, ...d, diaFechamento: null, diaVencimento: null };
+    this.contas.push(c);
+    return Promise.resolve({ ...c });
+  }
+  atualizarDiasCartao(id: string, f: number, v: number) {
+    Object.assign(this.contas.find((c) => c.id === id)!, { diaFechamento: f, diaVencimento: v });
+    return Promise.resolve();
+  }
+  faturasInformadas(_u: string, contaId: string) {
+    return Promise.resolve(
+      this.transacoes.filter((t) => t.contaId === contaId && t.tipo === "pagamento_fatura" && t.status === "informado") as Transacao[],
+    );
+  }
+  semDataDePagamento(_u: string, contaId: string) {
+    return Promise.resolve(this.ativas().filter((t) => t.contaId === contaId && t.dataPagamento === null) as Transacao[]);
+  }
+  confirmarTransacoes(ids: string[]) {
+    for (const t of this.transacoes) if (ids.includes(t.id)) t.status = "confirmado";
+    return Promise.resolve();
   }
   listarCategorias() {
     return Promise.resolve(CATEGORIAS);
   }
   inserirTransacoes(ts: NovaTransacao[]) {
     const ordem = ++this.seq;
-    const novas = ts.map((t) => ({ ...t, id: `t${++this.seq}`, status: "informado" as const, ordem }));
+    const novas = ts.map((t) => ({ ...t, id: `t${++this.seq}`, status: t.status ?? "informado" as const, ordem }));
     this.transacoes.push(...novas);
     return Promise.resolve(novas);
   }
@@ -106,7 +131,7 @@ export class RepoMemoria implements Repositorio {
     const ativas = this.ativas();
     if (ativas.length === 0) return Promise.resolve([]);
     const ultima = ativas.reduce((a, b) => (b.ordem > a.ordem ? b : a));
-    return Promise.resolve(ativas.filter((t) => t.mensagemId === ultima.mensagemId));
+    return Promise.resolve(ativas.filter((t) => t.mensagemId === ultima.mensagemId) as Transacao[]);
   }
   cancelarTransacoes(ids: string[]) {
     for (const t of this.transacoes) if (ids.includes(t.id)) t.status = "cancelado";
@@ -116,18 +141,53 @@ export class RepoMemoria implements Repositorio {
     Object.assign(this.transacoes.find((t) => t.id === id)!, campos);
     return Promise.resolve();
   }
-  resumoPorCategoria(_u: string, inicio: string, fim: string): Promise<LinhaResumo[]> {
+  resumoPorCategoria(_u: string, inicio: string, fim: string, contaId?: string): Promise<LinhaResumo[]> {
     const mapa = new Map<string, LinhaResumo>();
     for (const t of this.ativas()) {
       if (t.dataTransacao < inicio || t.dataTransacao > fim) continue;
+      if (t.tipo === "pagamento_fatura" || (contaId && t.contaId !== contaId)) continue;
       const categoria = CATEGORIAS.find((c) => c.id === t.categoriaId)?.nome ?? "Sem categoria";
       const chave = `${t.tipo}|${categoria}`;
-      const l = mapa.get(chave) ?? { tipo: t.tipo, categoria, totalCentavos: 0, quantidade: 0 };
+      const l = mapa.get(chave) ?? { tipo: t.tipo as "despesa" | "receita", categoria, totalCentavos: 0, quantidade: 0 };
       l.totalCentavos += t.valorCentavos;
       l.quantidade += 1;
       mapa.set(chave, l);
     }
     return Promise.resolve([...mapa.values()].sort((a, b) => b.totalCentavos - a.totalCentavos));
+  }
+
+  resumoPorConta(_u: string, inicio: string, fim: string): Promise<LinhaResumoConta[]> {
+    const mapa = new Map<string, LinhaResumoConta>();
+    for (const t of this.ativas()) {
+      if (t.dataTransacao < inicio || t.dataTransacao > fim || t.tipo === "pagamento_fatura") continue;
+      const conta = this.contas.find((c) => c.id === t.contaId) ?? null;
+      const chave = `${t.tipo}|${t.contaId}`;
+      const l = mapa.get(chave) ??
+        { contaId: t.contaId, conta: conta?.nome ?? null, tipoConta: conta?.tipo ?? null, tipo: t.tipo, totalCentavos: 0, quantidade: 0 };
+      l.totalCentavos += t.valorCentavos;
+      l.quantidade += 1;
+      mapa.set(chave, l);
+    }
+    return Promise.resolve([...mapa.values()]);
+  }
+  faturasAbertas(_u: string, hoje: string): Promise<LinhaFatura[]> {
+    const saida: LinhaFatura[] = [];
+    for (const t of this.transacoes) {
+      const conta = this.contas.find((c) => c.id === t.contaId);
+      if (!conta) continue;
+      if (t.tipo === "pagamento_fatura" && t.status === "informado") {
+        saida.push({ contaId: conta.id, conta: conta.nome, vencimento: t.dataPagamento, totalCentavos: t.valorCentavos, informada: true });
+      } else if (
+        conta.tipo === "cartao_credito" && t.status !== "cancelado" && t.tipo !== "pagamento_fatura" &&
+        t.dataPagamento && t.dataPagamento >= hoje
+      ) {
+        const sinal = t.tipo === "despesa" ? 1 : -1;
+        const l = saida.find((x) => !x.informada && x.contaId === conta.id && x.vencimento === t.dataPagamento);
+        if (l) l.totalCentavos += sinal * t.valorCentavos;
+        else saida.push({ contaId: conta.id, conta: conta.nome, vencimento: t.dataPagamento, totalCentavos: sinal * t.valorCentavos, informada: false });
+      }
+    }
+    return Promise.resolve(saida);
   }
 }
 

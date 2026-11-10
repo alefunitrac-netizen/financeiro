@@ -1,7 +1,17 @@
-// Textos que o bot devolve no WhatsApp. Formatação do WhatsApp: *negrito*, _itálico_.
-import { dataAmigavel } from "./datas.ts";
+// Textos que o bot devolve (WhatsApp e Telegram). Marcação: *negrito*, _itálico_.
+import { dataAmigavel, hojeNoFuso, vencimentoFatura } from "./datas.ts";
 import { formatarReais } from "./dinheiro.ts";
-import type { Categoria, Conta, DataISO, LinhaResumo, TipoLancamento, Transacao } from "./tipos.ts";
+import { chave } from "./texto.ts";
+import type {
+  Categoria,
+  Conta,
+  DataISO,
+  LinhaFatura,
+  LinhaResumo,
+  LinhaResumoConta,
+  TipoTransacao,
+  Transacao,
+} from "./tipos.ts";
 
 export function normalizar(s: string): string {
   return s
@@ -15,7 +25,7 @@ export function normalizar(s: string): string {
 
 /** Um lançamento como a pessoa o vê: uma compra parcelada é UM item com N valores. */
 export interface ItemLancamento {
-  tipo: TipoLancamento;
+  tipo: TipoTransacao;
   descricao: string;
   estabelecimento: string | null;
   valores: number[];
@@ -43,10 +53,11 @@ function valorTexto(item: ItemLancamento): string {
     : `${t} em ${n}x (1ª de ${formatarReais(primeira)}, demais de ${formatarReais(demais)})`;
 }
 
+const icone = (tipo: string | null | undefined) => (tipo === "cartao_credito" ? "💳" : tipo === "dinheiro" ? "💵" : "🏦");
+
 function contaTexto(conta: Conta | null): string {
   if (!conta) return "sem conta";
-  const icone = conta.tipo === "cartao_credito" ? "💳" : conta.tipo === "dinheiro" ? "💵" : "🏦";
-  return `${icone} ${conta.nome}`;
+  return `${icone(conta.tipo)} ${conta.nome}`;
 }
 
 function linhaFatura(item: ItemLancamento, hoje: DataISO): string | null {
@@ -61,6 +72,12 @@ function linhaFatura(item: ItemLancamento, hoje: DataISO): string | null {
 const RODAPE = "\n\n_Errei? Responda *desfazer* ou *corrigir: …*_";
 
 export function textoRegistro(itens: ItemLancamento[], hoje: DataISO, cabecalho?: string): string {
+  if (itens.length === 1 && itens[0].tipo === "pagamento_fatura") {
+    const item = itens[0];
+    return `${cabecalho ?? "🧾 *Fatura:*"} ${valorTexto(item)} — ${contaTexto(item.conta)}\n📅 ${
+      item.pagamentos[0] ? `Vence ${dataAmigavel(item.pagamentos[0], hoje)}` : "Vencimento a definir"
+    }${RODAPE}`;
+  }
   if (itens.length === 1) {
     const item = itens[0];
     const rotulo = cabecalho ?? (item.tipo === "receita" ? "✅ *Receita registrada:*" : "✅ *Registrado:*");
@@ -126,40 +143,167 @@ function porcentagem(parte: number, todo: number): string {
   return todo > 0 ? ` (${Math.round((parte * 100) / todo)}%)` : "";
 }
 
-export function textoResumo(linhas: LinhaResumo[], rotulo: string, categoriaFiltro: string | null): string {
+const vencimentoTexto = (v: DataISO | null, hoje: DataISO) =>
+  !v ? "vencimento a definir" : v < hoje ? `venceu ${dataAmigavel(v, hoje)}` : `vence ${dataAmigavel(v, hoje)}`;
+
+/**
+ * Faturas a mostrar, por cartão: as que você informou e a próxima calculada pelas compras.
+ * A informada vale mais que a calculada do mesmo vencimento; informada sem vencimento esconde a
+ * calculada (não dá para saber se é a mesma). Ordem: as que vencem primeiro.
+ */
+export function faturasParaMostrar(linhas: LinhaFatura[]): LinhaFatura[] {
+  const porCartao = new Map<string, LinhaFatura[]>();
+  for (const l of linhas) porCartao.set(l.contaId, [...(porCartao.get(l.contaId) ?? []), l]);
+  const saida: LinhaFatura[] = [];
+  for (const ls of porCartao.values()) {
+    const informadas = ls.filter((l) => l.informada);
+    saida.push(...informadas);
+    if (informadas.some((l) => !l.vencimento)) continue;
+    const ultimaInformada = informadas.map((l) => l.vencimento!).sort().at(-1) ?? "";
+    const proxima = ls
+      .filter((l) => !l.informada && l.totalCentavos > 0 && (l.vencimento ?? "") > ultimaInformada)
+      .sort((a, b) => (a.vencimento ?? "").localeCompare(b.vencimento ?? ""))[0];
+    if (proxima) saida.push(proxima);
+  }
+  return saida.sort((a, b) => (a.vencimento ?? "9999").localeCompare(b.vencimento ?? "9999"));
+}
+
+function linhasFaturas(linhas: LinhaFatura[], hoje: DataISO): string[] {
+  const mostrar = faturasParaMostrar(linhas);
+  if (!mostrar.length) return [];
+  const total = mostrar.reduce((a, l) => a + l.totalCentavos, 0);
+  return [
+    "",
+    `🧾 *Faturas a pagar: ${formatarReais(total)}*`,
+    ...mostrar.map((l) =>
+      `• 💳 ${l.conta}: ${formatarReais(l.totalCentavos)} · ${vencimentoTexto(l.vencimento, hoje)}${
+        l.informada ? "" : " _(compras até agora)_"
+      }`
+    ),
+  ];
+}
+
+function linhasPorConta(porConta: LinhaResumoConta[], tipo: "despesa" | "receita", total: number): string[] {
+  const doTipo = porConta.filter((l) => l.tipo === tipo);
+  // Só vale separar se ao menos um lançamento tem conta.
+  if (!doTipo.some((l) => l.conta)) return [];
+  return [
+    "_Por conta_",
+    ...doTipo
+      .sort((a, b) => b.totalCentavos - a.totalCentavos)
+      .map((l) =>
+        `• ${l.conta ? `${icone(l.tipoConta)} ${l.conta}` : "❔ Sem conta"}: ${formatarReais(l.totalCentavos)}${
+          tipo === "despesa" ? porcentagem(l.totalCentavos, total) : ""
+        }`
+      ),
+  ];
+}
+
+export interface ExtrasResumo {
+  porConta: LinhaResumoConta[];
+  faturas: LinhaFatura[];
+  /** Resumo de uma conta só ("quanto gastei no nubank?"). */
+  conta: Conta | null;
+  hoje: DataISO;
+}
+
+export function textoResumo(
+  linhas: LinhaResumo[],
+  rotulo: string,
+  categoriaFiltro: string | null,
+  extras: ExtrasResumo = { porConta: [], faturas: [], conta: null, hoje: "" },
+): string {
+  const ondeTexto = extras.conta ? ` no ${extras.conta.nome}` : "";
   if (categoriaFiltro) {
     const doFiltro = linhas.filter((l) => normalizar(l.categoria) === normalizar(categoriaFiltro));
-    if (doFiltro.length === 0) return `📊 Nada em *${categoriaFiltro}* em ${rotulo}.`;
+    if (doFiltro.length === 0) return `📊 Nada em *${categoriaFiltro}*${ondeTexto} em ${rotulo}.`;
     const soma = doFiltro.reduce((a, l) => a + l.totalCentavos, 0);
     const qtd = doFiltro.reduce((a, l) => a + l.quantidade, 0);
-    return `📊 *${doFiltro[0].categoria}* em ${rotulo}: ${formatarReais(soma)} (${qtd} lançamento${qtd > 1 ? "s" : ""})`;
+    return `📊 *${doFiltro[0].categoria}*${ondeTexto} em ${rotulo}: ${formatarReais(soma)} (${qtd} lançamento${qtd > 1 ? "s" : ""})`;
   }
 
   const despesas = linhas.filter((l) => l.tipo === "despesa");
   const receitas = linhas.filter((l) => l.tipo === "receita");
-  if (despesas.length === 0 && receitas.length === 0) return `📊 Nada registrado em ${rotulo} ainda.`;
+  const faturas = linhasFaturas(extras.faturas, extras.hoje);
+  if (despesas.length === 0 && receitas.length === 0) {
+    return [`📊 Nada registrado${ondeTexto} em ${rotulo} ainda.`, ...faturas].join("\n");
+  }
 
   const totalDespesas = despesas.reduce((a, l) => a + l.totalCentavos, 0);
   const totalReceitas = receitas.reduce((a, l) => a + l.totalCentavos, 0);
-  const partes = [`📊 *Resumo — ${rotulo}*`];
+  const partes = [extras.conta ? `📊 *${extras.conta.nome} — ${rotulo}*` : `📊 *Resumo — ${rotulo}*`];
   if (despesas.length) {
+    const contas = linhasPorConta(extras.porConta, "despesa", totalDespesas);
     partes.push(
       "",
-      `*Despesas: ${formatarReais(totalDespesas)}*`,
+      `💸 *Despesas: ${formatarReais(totalDespesas)}*`,
+      ...contas,
+      ...(contas.length ? ["_Por categoria_"] : []),
       ...despesas.map((l) => `• ${l.categoria}: ${formatarReais(l.totalCentavos)}${porcentagem(l.totalCentavos, totalDespesas)}`),
     );
   }
   if (receitas.length) {
+    const contas = linhasPorConta(extras.porConta, "receita", totalReceitas);
     partes.push(
       "",
-      `*Receitas: ${formatarReais(totalReceitas)}*`,
+      `💰 *Receitas: ${formatarReais(totalReceitas)}*`,
+      ...contas,
+      ...(contas.length ? ["_Por categoria_"] : []),
       ...receitas.map((l) => `• ${l.categoria}: ${formatarReais(l.totalCentavos)}`),
     );
   }
   if (despesas.length && receitas.length) {
     partes.push("", `*Saldo do período:* ${formatarReais(totalReceitas - totalDespesas)}`);
   }
+  partes.push(...faturas);
   return partes.join("\n");
+}
+
+/** Resposta ao informar uma fatura. Ela não soma nas despesas: os gastos são as compras dentro dela. */
+export function textoFatura(t: Transacao, cartao: Conta | null, hoje: DataISO, cabecalho = "🧾 *Fatura registrada:*"): string {
+  const linhas = [
+    `${cabecalho} ${formatarReais(t.valorCentavos)} — ${contaTexto(cartao)}`,
+    cabecalho.startsWith("✅")
+      ? `📅 Paga ${dataAmigavel(t.dataPagamento ?? hoje, hoje)}`
+      : `📅 ${t.dataPagamento ? `Vence ${dataAmigavel(t.dataPagamento, hoje)}` : "Vencimento a definir"}`,
+  ];
+  if (!t.dataPagamento && !cabecalho.startsWith("✅")) {
+    const k = chave(cartao?.instituicao || cartao?.nome.replace(/^Cartão\s+/i, "") || "nubank").trim();
+    linhas.push(`_Quando vence? Responda: fatura ${k} vence dia 15 — ou cadastre o cartão: ${k} fecha dia 3 vence dia 10._`);
+  }
+  linhas.push("_Fica em \"faturas a pagar\" e não soma nas despesas: as despesas são as compras dentro dela._");
+  return linhas.join("\n") + RODAPE;
+}
+
+export function textoCartaoConfigurado(c: Conta, atualizados: number, hoje: DataISO): string {
+  const linhas = [`💳 *${c.nome}*: fecha dia ${c.diaFechamento}, vence dia ${c.diaVencimento}.`];
+  if (c.diaFechamento && c.diaVencimento) {
+    linhas.push(`🧾 Uma compra hoje cai na fatura que vence ${dataAmigavel(vencimentoFatura(hoje, c.diaFechamento, c.diaVencimento), hoje)}.`);
+  }
+  if (atualizados) linhas.push(`✅ Atualizei ${atualizados} lançamento${atualizados > 1 ? "s" : ""} desse cartão.`);
+  return linhas.join("\n");
+}
+
+/** "contas"/"saldo": cada conta com o que o banco informou e as faturas em aberto. */
+export function textoContas(contas: Conta[], faturas: LinhaFatura[], hoje: DataISO): string {
+  if (!contas.length) {
+    return "🏦 Nenhuma conta ainda. Elas aparecem quando você cita o banco (_almoço 35 no nubank_) ou conecta pelo Meu Pluggy.";
+  }
+  const linhas = ["🏦 *Suas contas*"];
+  const ordem = [...contas].sort((a, b) => Number(a.tipo === "cartao_credito") - Number(b.tipo === "cartao_credito") || a.nome.localeCompare(b.nome));
+  for (const c of ordem) {
+    let detalhe: string;
+    if (c.saldoCentavos == null) detalhe = "_cadastrada por você_";
+    else if (c.tipo === "cartao_credito") {
+      detalhe = `usado ${formatarReais(c.saldoCentavos)}${c.limiteCentavos ? ` de ${formatarReais(c.limiteCentavos)}` : ""}`;
+    } else detalhe = `saldo ${formatarReais(c.saldoCentavos)}`;
+    const quando = c.saldoAtualizadoEm ? ` · banco ${dataAmigavel(hojeNoFuso("America/Sao_Paulo", new Date(c.saldoAtualizadoEm)), hoje)}` : "";
+    const dias = c.tipo === "cartao_credito" && c.diaFechamento ? ` · fecha ${c.diaFechamento}, vence ${c.diaVencimento}` : "";
+    linhas.push(`• ${icone(c.tipo)} ${c.nome}: ${detalhe}${quando}${dias}`);
+  }
+  const blocoFaturas = linhasFaturas(faturas, hoje);
+  linhas.push(...(blocoFaturas.length ? blocoFaturas : ["", "🧾 Nenhuma fatura em aberto."]));
+  return linhas.join("\n");
 }
 
 export function textoAjuda(nome: string): string {
@@ -173,7 +317,14 @@ export function textoAjuda(nome: string): string {
 • _resumo da semana_
 • _quanto foi de mercado em outubro?_
 
-Errou? *desfazer* cancela o último registro e *corrigir: era 52* ajusta.
+*Cartões e faturas*
+• _fatura nubank 1547 vence dia 15_
+• _nubank fecha dia 3 vence dia 10_
+• _paguei a fatura do nubank 1547_
+• _contas_ mostra saldos e faturas a pagar
+
+Errou? *desfazer* cancela o último registro. Para ajustar: _era 52_, _foi no nubank_, _foi no débito_.
+_em qual banco foi?_ mostra o último registro.
 Com banco conectado, *atualizar* busca as novidades do banco.`;
 }
 

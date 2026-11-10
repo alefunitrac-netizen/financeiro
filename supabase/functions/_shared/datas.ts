@@ -76,6 +76,11 @@ function proximoDia(data: DataISO, dia: number): DataISO {
   return candidata > data ? candidata : somarMeses(montar(a, m, 1), 1, dia);
 }
 
+/** Primeira data com o dia `dia` (limitado ao fim do mês) a partir de `data`, contando ela mesma. */
+export function proximaDataComDia(data: DataISO, dia: number): DataISO {
+  return proximoDia(somarDias(data, -1), dia);
+}
+
 /**
  * Vencimento da fatura em que cai uma compra no cartão.
  * Convenção dos bancos brasileiros: compra feita NO dia do fechamento já vai para a

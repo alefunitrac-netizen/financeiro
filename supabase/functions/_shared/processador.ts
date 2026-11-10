@@ -6,11 +6,13 @@ import {
   diaDaSemana,
   hojeNoFuso,
   intervaloDoPeriodo,
+  proximaDataComDia,
   somarDias,
   somarMeses,
   vencimentoFatura,
 } from "./datas.ts";
 import { dividirEmParcelas, paraCentavos } from "./dinheiro.ts";
+import { bancoDoTexto } from "./bancos.ts";
 import {
   type ItemLancamento,
   itensDeTransacoes,
@@ -20,12 +22,16 @@ import {
   TEXTO_FORA_DO_ESCOPO,
   TEXTO_SO_TEXTO,
   textoAjuda,
+  textoCartaoConfigurado,
+  textoContas,
   textoDesfeito,
+  textoFatura,
   textoRegistro,
   textoResumo,
   textoVinculado,
 } from "./respostas.ts";
 import { normalizarWhatsapp } from "./telefone.ts";
+import { chave } from "./texto.ts";
 import type {
   CamposCorrecao,
   Canal,
@@ -35,9 +41,13 @@ import type {
   Interpretacao,
   Interpretador,
   LancamentoInterpretado,
+  Meio,
   Mensageiro,
   MensagemRecebida,
+  NovaConta,
   NovaTransacao,
+  PedidoCartao,
+  PedidoFatura,
   Repositorio,
   TipoLancamento,
   Usuario,
@@ -93,6 +103,69 @@ export function dataDePagamento(data: DataISO, conta: Conta | null): DataISO | n
   return data;
 }
 
+const bancoDa = (c: Conta) => c.instituicao || bancoDoTexto(c.nome);
+const combinaMeio = (c: Conta, meio: Meio | null | undefined) =>
+  !meio || (meio === "credito" ? c.tipo === "cartao_credito" : c.tipo !== "cartao_credito");
+
+/** Conta que o sistema cria quando você cita um banco que ainda não está cadastrado. */
+export function novaContaDoBanco(banco: string, meio: Meio | null | undefined): NovaConta {
+  const k = chave(banco).trim();
+  return meio === "debito"
+    ? { nome: banco, tipo: "corrente", instituicao: banco, apelidos: [k, `conta ${k}`, `debito ${k}`, `pix ${k}`] }
+    : {
+      nome: `Cartão ${banco}`,
+      tipo: "cartao_credito",
+      instituicao: banco,
+      apelidos: [k, `cartao ${k}`, `${k} credito`, `credito ${k}`, `fatura ${k}`],
+    };
+}
+
+/**
+ * Acha a conta citada, respeitando a pista de meio de pagamento ("no débito do nubank" não é o
+ * cartão Nubank). Se for um banco conhecido sem a conta do tipo certo, cria a conta.
+ * `base`: conta atual do lançamento, para "foi no débito" (mesmo banco, outro tipo).
+ */
+async function resolverConta(
+  nome: string | null,
+  meio: Meio | null | undefined,
+  ctx: Contexto,
+  base: Conta | null = null,
+): Promise<{ conta: Conta | null; criada: Conta | null }> {
+  const achada = nome ? encontrarConta(nome, ctx.contas) : null;
+  if (achada && combinaMeio(achada, meio)) return { conta: achada, criada: null };
+
+  const banco = achada ? bancoDa(achada) : nome ? bancoDoTexto(nome) : base ? bancoDa(base) : null;
+  if (!banco || (!achada && !nome && !meio)) return { conta: achada, criada: null };
+
+  const doBanco = ctx.contas.filter((c) => bancoDa(c) === banco && combinaMeio(c, meio));
+  if (doBanco.length) return { conta: doBanco.find((c) => c.tipo === "cartao_credito") ?? doBanco[0], criada: null };
+
+  const dados = novaContaDoBanco(banco, meio);
+  const mesmoNome = ctx.contas.find((c) => normalizar(c.nome) === normalizar(dados.nome));
+  if (mesmoNome) return { conta: mesmoNome, criada: null };
+  const criada = await ctx.deps.repo.criarConta(ctx.usuario.id, dados);
+  ctx.contas.push(criada);
+  ctx.deps.log("conta_criada", { tipo: criada.tipo, instituicao: banco });
+  return { conta: criada, criada };
+}
+
+const PEDIR_DIAS = (c: Conta) => {
+  const k = bancoDa(c) ? chave(bancoDa(c)!).trim() : "cartao";
+  return `Para eu saber em que fatura cada compra cai, me diga: _${k} fecha dia 3 vence dia 10_ (com os dias do seu cartão).`;
+};
+
+function avisoContaCriada(c: Conta, curto = false): string {
+  if (curto) return `${c.tipo === "cartao_credito" ? "💳" : "🏦"} Criei ${c.tipo === "cartao_credito" ? "o" : "a conta"} *${c.nome}*.`;
+  return c.tipo === "cartao_credito"
+    ? `💳 Criei o *${c.nome}*. ${PEDIR_DIAS(c)}\n_Se foi no débito ou Pix, responda: foi no débito._`
+    : `🏦 Criei a conta *${c.nome}*.`;
+}
+
+/** Vencimento da próxima fatura do cartão, se ele tem os dias cadastrados. */
+function proximoVencimento(c: Conta, hoje: DataISO): DataISO | null {
+  return c.diaVencimento ? proximaDataComDia(hoje, c.diaVencimento) : null;
+}
+
 /** Comandos de uma palavra não precisam de IA: mais rápido, mais barato e funciona mesmo se a API cair. */
 export function comandoDireto(texto: string): Interpretacao | null {
   const t = normalizar(texto);
@@ -101,7 +174,10 @@ export function comandoDireto(texto: string): Interpretacao | null {
     return { intencao: "desfazer", ...vazio };
   }
   if (["ajuda", "help", "menu", "oi", "ola", "comandos", "start"].includes(t)) return { intencao: "ajuda", ...vazio };
-  if (["resumo", "extrato", "saldo"].includes(t)) {
+  if (["saldo", "saldos", "contas", "minhas contas", "faturas", "fatura", "cartoes", "limite"].includes(t)) {
+    return { intencao: "contas", ...vazio };
+  }
+  if (["resumo", "extrato", "resumo total", "resumo geral", "por banco", "por conta"].includes(t)) {
     return {
       intencao: "resumo",
       ...vazio,
@@ -129,7 +205,7 @@ interface Contexto {
 }
 
 async function registrar(lancamentos: LancamentoInterpretado[], ctx: Contexto): Promise<Resultado> {
-  const { hoje, contas, categorias } = ctx;
+  const { hoje, categorias } = ctx;
   const novas: NovaTransacao[] = [];
   const itens: ItemLancamento[] = [];
   const avisos: string[] = [];
@@ -148,10 +224,11 @@ async function registrar(lancamentos: LancamentoInterpretado[], ctx: Contexto): 
       data = hoje;
     }
 
-    const conta = encontrarConta(l.conta, contas);
+    const { conta, criada } = await resolverConta(l.conta, l.meio, ctx);
     if (l.conta && !conta) avisos.push(`⚠️ Não achei a conta "${l.conta}"; registrei sem conta.`);
-    if (conta?.tipo === "cartao_credito" && !conta.diaFechamento) {
-      avisos.push(`ℹ️ Cadastre o fechamento e o vencimento do ${conta.nome} para eu calcular as faturas.`);
+    if (criada) avisos.push(avisoContaCriada(criada));
+    else if (conta?.tipo === "cartao_credito" && !conta.diaFechamento && !avisos.some((a) => a.includes(conta.nome))) {
+      avisos.push(`ℹ️ ${conta.nome} sem fechamento e vencimento. ${PEDIR_DIAS(conta)}`);
     }
     const categoria = encontrarCategoria(l.categoria, l.tipo, categorias);
 
@@ -227,12 +304,16 @@ async function corrigir(correcao: Interpretacao["correcao"], ctx: Contexto): Pro
   const comum: CamposCorrecao = {};
   let novaConta: Conta | null | undefined;
 
-  if (correcao.conta) {
-    novaConta = encontrarConta(correcao.conta, ctx.contas);
+  if (correcao.conta || correcao.meio) {
+    const atual = ctx.contas.find((c) => c.id === ts[0].contaId) ?? null;
+    const r = await resolverConta(correcao.conta, correcao.meio, ctx, atual);
+    novaConta = r.conta;
     if (novaConta) comum.contaId = novaConta.id;
-    else avisos.push(`⚠️ Não achei a conta "${correcao.conta}".`);
+    else if (correcao.conta) avisos.push(`⚠️ Não achei a conta "${correcao.conta}".`);
+    else avisos.push(`⚠️ Em qual banco? Ex.: _foi no débito do itaú_.`);
+    if (r.criada) avisos.push(avisoContaCriada(r.criada));
   }
-  if (correcao.categoria) {
+  if (correcao.categoria && ts[0].tipo !== "pagamento_fatura") {
     const cat = encontrarCategoria(correcao.categoria, ts[0].tipo, ctx.categorias);
     if (cat) comum.categoriaId = cat.id;
   }
@@ -260,7 +341,7 @@ async function corrigir(correcao: Interpretacao["correcao"], ctx: Contexto): Pro
     const campos: CamposCorrecao = { ...comum };
     if (novoValor !== null) campos.valorCentavos = novoValor;
     if (novaData !== null) campos.dataTransacao = novaData;
-    if (campos.contaId !== undefined || campos.dataTransacao !== undefined) {
+    if (t.tipo !== "pagamento_fatura" && (campos.contaId !== undefined || campos.dataTransacao !== undefined)) {
       const conta = novaConta ?? ctx.contas.find((c) => c.id === t.contaId) ?? null;
       campos.dataPagamento = dataDePagamento(campos.dataTransacao ?? t.dataTransacao, conta);
     }
@@ -286,8 +367,120 @@ async function resumir(pedido: Interpretacao["resumo"], ctx: Contexto): Promise<
   } else {
     intervalo = intervaloDoPeriodo(p.periodo === "intervalo" ? "mes_atual" : p.periodo, ctx.hoje);
   }
-  const linhas = await ctx.deps.repo.resumoPorCategoria(ctx.usuario.id, intervalo.inicio, intervalo.fim);
-  return { texto: textoResumo(linhas, intervalo.rotulo, p.categoria), status: "processada" };
+  const { repo } = ctx.deps;
+  let conta: Conta | null = null;
+  if (p.conta) {
+    conta = encontrarConta(p.conta, ctx.contas) ??
+      ctx.contas.find((c) => bancoDa(c) !== null && bancoDa(c) === bancoDoTexto(p.conta!)) ?? null;
+    if (!conta) return { texto: `📊 Não tenho a conta *${p.conta}* ainda. Ela aparece quando você registrar algo nela.`, status: "processada" };
+  }
+  const [categorias, porConta, faturas] = await Promise.all([
+    repo.resumoPorCategoria(ctx.usuario.id, intervalo.inicio, intervalo.fim, conta?.id),
+    repo.resumoPorConta(ctx.usuario.id, intervalo.inicio, intervalo.fim),
+    conta || p.categoria ? Promise.resolve([]) : repo.faturasAbertas(ctx.usuario.id, ctx.hoje),
+  ]);
+  const texto = textoResumo(categorias, intervalo.rotulo, p.categoria, {
+    porConta: conta ? [] : porConta,
+    faturas,
+    conta,
+    hoje: ctx.hoje,
+  });
+  return { texto, status: "processada" };
+}
+
+async function registrarFatura(f: PedidoFatura, ctx: Contexto): Promise<Resultado> {
+  const { repo } = ctx.deps;
+  const cartoes = ctx.contas.filter((c) => c.tipo === "cartao_credito");
+  const r = f.conta ? await resolverConta(f.conta, "credito", ctx) : { conta: cartoes.length === 1 ? cartoes[0] : null, criada: null };
+  const cartao = r.conta;
+  if (!cartao || cartao.tipo !== "cartao_credito") {
+    return { texto: "🧾 De qual cartão é essa fatura? Ex.: _fatura nubank 1547 vence dia 15_.", status: "processada" };
+  }
+  const abertas = await repo.faturasInformadas(ctx.usuario.id, cartao.id);
+  const avisos = r.criada ? [avisoContaCriada(r.criada, true)] : [];
+
+  if (f.valor === null) {
+    // Só o vencimento: ajusta a fatura que você já informou.
+    const ultima = abertas[abertas.length - 1];
+    if (!ultima) {
+      return { texto: `🧾 Não achei fatura do ${cartao.nome}. Mande com o valor: _fatura ${chave(bancoDa(cartao) ?? "nubank").trim()} 1547 vence dia 15_.`, status: "processada" };
+    }
+    await repo.atualizarTransacao(ultima.id, { dataPagamento: f.vencimento });
+    return { texto: textoFatura({ ...ultima, dataPagamento: f.vencimento }, cartao, ctx.hoje, "✏️ *Fatura atualizada:*"), status: "processada" };
+  }
+
+  const valor = paraCentavos(f.valor);
+  if (valor === null) return { texto: `⚠️ Não entendi o valor da fatura. Ex.: _fatura nubank 1547,90_.`, status: "processada" };
+
+  let vencimento = f.vencimento ?? proximoVencimento(cartao, ctx.hoje);
+  if (f.paga) {
+    // Paga agora: as que estavam em aberto saem da lista de "a pagar".
+    if (abertas.length) await repo.confirmarTransacoes(abertas.map((a) => a.id));
+    vencimento = f.vencimento ?? ctx.hoje;
+  } else {
+    // Informar de novo a mesma fatura troca o valor, em vez de somar.
+    const repetidas = abertas.filter((a) => !a.dataPagamento || !vencimento || a.dataPagamento === vencimento);
+    if (repetidas.length) await repo.cancelarTransacoes(repetidas.map((a) => a.id));
+  }
+  const [gravada] = await repo.inserirTransacoes([{
+    usuarioId: ctx.usuario.id,
+    origem: ctx.canal,
+    contaId: cartao.id,
+    categoriaId: null,
+    mensagemId: ctx.mensagemId,
+    tipo: "pagamento_fatura",
+    status: f.paga ? "confirmado" : "informado",
+    descricao: `Fatura ${cartao.nome}`,
+    estabelecimento: null,
+    valorCentavos: valor,
+    dataTransacao: ctx.hoje,
+    dataPagamento: vencimento,
+    parcelaNumero: null,
+    parcelaTotal: null,
+    grupoParcelamento: null,
+  }]);
+  const texto = textoFatura(gravada, cartao, ctx.hoje, f.paga ? "✅ *Fatura paga:*" : undefined);
+  return { texto: avisos.length ? `${texto}\n\n${avisos.join("\n")}` : texto, status: "processada" };
+}
+
+async function configurarCartao(p: PedidoCartao, ctx: Contexto): Promise<Resultado> {
+  const { repo } = ctx.deps;
+  const cartoes = ctx.contas.filter((c) => c.tipo === "cartao_credito");
+  const r = p.conta ? await resolverConta(p.conta, "credito", ctx) : { conta: cartoes.length === 1 ? cartoes[0] : null, criada: null };
+  const cartao = r.conta;
+  if (!cartao || cartao.tipo !== "cartao_credito") {
+    return { texto: "💳 De qual cartão? Ex.: _nubank fecha dia 3 vence dia 10_.", status: "processada" };
+  }
+  await repo.atualizarDiasCartao(cartao.id, p.diaFechamento, p.diaVencimento);
+  cartao.diaFechamento = p.diaFechamento;
+  cartao.diaVencimento = p.diaVencimento;
+
+  // O que já estava no cartão sem data de pagamento ganha a fatura certa.
+  let atualizados = 0;
+  for (const t of await repo.semDataDePagamento(ctx.usuario.id, cartao.id)) {
+    const pagamento = t.tipo === "pagamento_fatura"
+      ? proximaDataComDia(ctx.hoje, p.diaVencimento)
+      : vencimentoFatura(t.dataTransacao, p.diaFechamento, p.diaVencimento);
+    await repo.atualizarTransacao(t.id, { dataPagamento: pagamento });
+    atualizados++;
+  }
+  return { texto: textoCartaoConfigurado(cartao, atualizados, ctx.hoje), status: "processada" };
+}
+
+async function mostrarUltimo(ctx: Contexto): Promise<Resultado> {
+  const ts = await ctx.deps.repo.transacoesDaUltimaMensagem(ctx.usuario.id);
+  if (ts.length === 0) return { texto: "Você ainda não registrou nada por aqui.", status: "processada" };
+  const itens = itensDeTransacoes(ts, ctx.contas, ctx.categorias);
+  let texto = ts[0].tipo === "pagamento_fatura"
+    ? textoFatura(ts[0], ctx.contas.find((c) => c.id === ts[0].contaId) ?? null, ctx.hoje, "🔎 *Último registro:*")
+    : textoRegistro(itens, ctx.hoje, "🔎 *Último registro:*");
+  if (!ts[0].contaId) texto += "\n\nEstá *sem conta*. Para dizer onde foi, responda: _foi no nubank_ (ou _foi no débito do itaú_).";
+  return { texto, status: "processada" };
+}
+
+async function mostrarContas(ctx: Contexto): Promise<Resultado> {
+  const faturas = await ctx.deps.repo.faturasAbertas(ctx.usuario.id, ctx.hoje);
+  return { texto: textoContas(ctx.contas, faturas, ctx.hoje), status: "processada" };
 }
 
 async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: string, deps: Dependencias) {
@@ -336,6 +529,22 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
       break;
     case "ajuda":
       resultado = { texto: textoAjuda(usuario.nome), status: "processada" };
+      break;
+    case "fatura":
+      resultado = interpretacao.fatura
+        ? await registrarFatura(interpretacao.fatura, ctx)
+        : { texto: "🧾 Mande assim: _fatura nubank 1547 vence dia 15_.", status: "processada" };
+      break;
+    case "configurar_cartao":
+      resultado = interpretacao.cartao
+        ? await configurarCartao(interpretacao.cartao, ctx)
+        : { texto: "💳 Mande assim: _nubank fecha dia 3 vence dia 10_.", status: "processada" };
+      break;
+    case "ultimo":
+      resultado = await mostrarUltimo(ctx);
+      break;
+    case "contas":
+      resultado = await mostrarContas(ctx);
       break;
     case "esclarecer":
       resultado = {

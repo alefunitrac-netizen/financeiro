@@ -2,6 +2,25 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.119.0";
 import type { CamposCorrecao, Categoria, Conta, NovaTransacao, Repositorio, Transacao, Usuario } from "./tipos.ts";
 
+const COLUNAS_CONTA =
+  "id, nome, tipo, apelidos, instituicao, dia_fechamento, dia_vencimento, saldo_centavos, limite_centavos, saldo_atualizado_em";
+
+// deno-lint-ignore no-explicit-any
+function deLinhaConta(c: Record<string, any>): Conta {
+  return {
+    id: c.id,
+    nome: c.nome,
+    tipo: c.tipo,
+    apelidos: c.apelidos ?? [],
+    instituicao: c.instituicao ?? null,
+    diaFechamento: c.dia_fechamento,
+    diaVencimento: c.dia_vencimento,
+    saldoCentavos: c.saldo_centavos == null ? null : Number(c.saldo_centavos),
+    limiteCentavos: c.limite_centavos == null ? null : Number(c.limite_centavos),
+    saldoAtualizadoEm: c.saldo_atualizado_em ?? null,
+  };
+}
+
 const COLUNAS_TRANSACAO =
   "id, usuario_id, origem, conta_id, categoria_id, mensagem_id, tipo, descricao, estabelecimento, valor_centavos, data_transacao, data_pagamento, parcela_numero, parcela_total, grupo_parcelamento";
 
@@ -36,7 +55,7 @@ function paraLinha(t: NovaTransacao): Linha {
     mensagem_id: t.mensagemId,
     tipo: t.tipo,
     origem: t.origem,
-    status: "informado",
+    status: t.status ?? "informado",
     descricao: t.descricao,
     estabelecimento: t.estabelecimento,
     valor_centavos: t.valorCentavos,
@@ -130,19 +149,56 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
     async listarContas(usuarioId) {
       const { data, error } = await db
         .from("contas")
-        .select("id, nome, tipo, apelidos, dia_fechamento, dia_vencimento")
+        .select(COLUNAS_CONTA)
         .eq("usuario_id", usuarioId)
         .eq("ativa", true)
         .order("nome");
       if (error) falhar("listarContas", error);
-      return (data ?? []).map((c: Linha): Conta => ({
-        id: c.id,
-        nome: c.nome,
-        tipo: c.tipo,
-        apelidos: c.apelidos ?? [],
-        diaFechamento: c.dia_fechamento,
-        diaVencimento: c.dia_vencimento,
-      }));
+      return (data ?? []).map(deLinhaConta);
+    },
+
+    async criarConta(usuarioId, d) {
+      const { data, error } = await db
+        .from("contas")
+        .insert({ usuario_id: usuarioId, nome: d.nome, tipo: d.tipo, instituicao: d.instituicao, apelidos: d.apelidos })
+        .select(COLUNAS_CONTA)
+        .single();
+      if (error) falhar("criarConta", error);
+      return deLinhaConta(data);
+    },
+
+    async atualizarDiasCartao(contaId, diaFechamento, diaVencimento) {
+      const { error } = await db
+        .from("contas")
+        .update({ dia_fechamento: diaFechamento, dia_vencimento: diaVencimento })
+        .eq("id", contaId);
+      if (error) falhar("atualizarDiasCartao", error);
+    },
+
+    async faturasInformadas(usuarioId, contaId) {
+      const { data, error } = await db
+        .from("transacoes")
+        .select(COLUNAS_TRANSACAO)
+        .eq("usuario_id", usuarioId)
+        .eq("conta_id", contaId)
+        .eq("tipo", "pagamento_fatura")
+        .eq("status", "informado")
+        .neq("origem", "banco")
+        .order("criado_em");
+      if (error) falhar("faturasInformadas", error);
+      return (data ?? []).map(deLinha);
+    },
+
+    async semDataDePagamento(usuarioId, contaId) {
+      const { data, error } = await db
+        .from("transacoes")
+        .select(COLUNAS_TRANSACAO)
+        .eq("usuario_id", usuarioId)
+        .eq("conta_id", contaId)
+        .neq("status", "cancelado")
+        .is("data_pagamento", null);
+      if (error) falhar("semDataDePagamento", error);
+      return (data ?? []).map(deLinha);
     },
 
     async listarCategorias(usuarioId) {
@@ -189,6 +245,14 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
       if (error) falhar("cancelarTransacoes", error);
     },
 
+    async confirmarTransacoes(ids) {
+      const { error } = await db
+        .from("transacoes")
+        .update({ status: "confirmado", confirmado_em: new Date().toISOString() })
+        .in("id", ids);
+      if (error) falhar("confirmarTransacoes", error);
+    },
+
     async atualizarTransacao(id, campos) {
       const linha: Linha = {};
       for (const [chave, valor] of Object.entries(campos)) {
@@ -198,18 +262,41 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
       if (error) falhar("atualizarTransacao", error);
     },
 
-    async resumoPorCategoria(usuarioId, inicio, fim) {
-      const { data, error } = await db.rpc("resumo_por_categoria", {
-        p_usuario: usuarioId,
-        p_inicio: inicio,
-        p_fim: fim,
-      });
+    async resumoPorCategoria(usuarioId, inicio, fim, contaId) {
+      const { data, error } = contaId
+        ? await db.rpc("resumo_por_categoria_conta", { p_usuario: usuarioId, p_inicio: inicio, p_fim: fim, p_conta: contaId })
+        : await db.rpc("resumo_por_categoria", { p_usuario: usuarioId, p_inicio: inicio, p_fim: fim });
       if (error) falhar("resumoPorCategoria", error);
       return ((data ?? []) as Linha[]).map((l) => ({
         tipo: l.tipo,
         categoria: l.categoria,
         totalCentavos: Number(l.total_centavos),
         quantidade: Number(l.quantidade),
+      }));
+    },
+
+    async resumoPorConta(usuarioId, inicio, fim) {
+      const { data, error } = await db.rpc("resumo_por_conta", { p_usuario: usuarioId, p_inicio: inicio, p_fim: fim });
+      if (error) falhar("resumoPorConta", error);
+      return ((data ?? []) as Linha[]).map((l) => ({
+        contaId: l.conta_id,
+        conta: l.conta,
+        tipoConta: l.tipo_conta,
+        tipo: l.tipo,
+        totalCentavos: Number(l.total_centavos),
+        quantidade: Number(l.quantidade),
+      }));
+    },
+
+    async faturasAbertas(usuarioId, hoje) {
+      const { data, error } = await db.rpc("faturas_abertas", { p_usuario: usuarioId, p_hoje: hoje });
+      if (error) falhar("faturasAbertas", error);
+      return ((data ?? []) as Linha[]).map((l) => ({
+        contaId: l.conta_id,
+        conta: l.conta,
+        vencimento: l.vencimento,
+        totalCentavos: Number(l.total_centavos),
+        informada: Boolean(l.informada),
       }));
     },
   };

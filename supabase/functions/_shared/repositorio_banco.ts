@@ -50,14 +50,17 @@ export function criarRepositorioBanco(db: SupabaseClient): RepositorioBanco {
     async salvarConta(usuarioId, d) {
       // Os dados que só o banco sabe são sempre atualizados; nome e apelidos, só na criação
       // (você pode renomear a conta e o banco não desfaz).
-      const doBanco = {
+      const doBanco: Linha = {
         instituicao: d.instituicao,
-        dia_fechamento: d.diaFechamento,
-        dia_vencimento: d.diaVencimento,
         limite_centavos: d.limiteCentavos,
         saldo_centavos: d.saldoCentavos,
         saldo_atualizado_em: new Date().toISOString(),
       };
+      // Sem os dias pelo banco, ficam os que você cadastrou ("nubank fecha dia 3 vence dia 10").
+      if (d.diaFechamento !== null && d.diaVencimento !== null) {
+        doBanco.dia_fechamento = d.diaFechamento;
+        doBanco.dia_vencimento = d.diaVencimento;
+      }
       const { data: existente, error: e1 } = await db
         .from("contas")
         .select("id")
@@ -70,14 +73,17 @@ export function criarRepositorioBanco(db: SupabaseClient): RepositorioBanco {
         if (error) falhar("salvarConta.atualizar", error);
         return deLinhaConta(data);
       }
-      // Uma conta criada à mão com o mesmo nome é adotada, em vez de duplicada.
-      const { data: mesmoNome } = await db
+      // Uma conta criada à mão (mesmo nome, ou única do mesmo banco e tipo) é adotada, em vez de duplicada:
+      // o "Cartão Nubank" que você informou vira o cartão que veio do banco, com os lançamentos dele.
+      const { data: manuais, error: e2 } = await db
         .from("contas")
-        .select("id")
+        .select("id, nome, tipo, instituicao")
         .eq("usuario_id", usuarioId)
-        .eq("nome", d.nome)
-        .is("external_id", null)
-        .maybeSingle();
+        .is("external_id", null);
+      if (e2) falhar("salvarConta.manuais", e2);
+      const doMesmoBanco = (manuais ?? []).filter((c: Linha) => c.tipo === d.tipo && c.instituicao === d.instituicao);
+      const mesmoNome = (manuais ?? []).find((c: Linha) => c.nome === d.nome) ??
+        (doMesmoBanco.length === 1 ? doMesmoBanco[0] : null);
       if (mesmoNome) {
         const { data, error } = await db
           .from("contas")

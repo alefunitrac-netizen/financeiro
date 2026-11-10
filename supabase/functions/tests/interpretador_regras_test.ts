@@ -39,6 +39,7 @@ const BASE = {
   parcelas: null,
   data: "2026-11-07",
   conta: null,
+  meio: null,
 };
 
 Deno.test("as frases que você mandou", () => {
@@ -62,7 +63,7 @@ Deno.test("conta por nome ou apelido, com 'no cartão', 'na conta'...", () => {
 
   const tv = umLancamento("tv 3000 em 10x no cartão itaú");
   assert.deepEqual(tv, {
-    ...BASE, descricao: "TV", valor: "3000.00", parcelas: 10, conta: "Itaú", categoria: "Compras",
+    ...BASE, descricao: "TV", valor: "3000.00", parcelas: 10, conta: "Itaú", categoria: "Compras", meio: "credito",
   });
   assert.equal(umLancamento("mercado 230 no roxinho").conta, "Nubank crédito");
   assert.equal(umLancamento("mercado 230").conta, null);
@@ -159,18 +160,18 @@ Deno.test("resumos: período e categoria", () => {
     assert.equal(r?.intencao, "resumo", `"${t}" deveria ser resumo`);
     return r!.resumo;
   };
-  assert.deepEqual(resumo("quanto gastei esse mês?"), { periodo: "mes_atual", inicio: null, fim: null, categoria: null });
+  assert.deepEqual(resumo("quanto gastei esse mês?"), { periodo: "mes_atual", inicio: null, fim: null, categoria: null, conta: null });
   assert.equal(resumo("resumo da semana")?.periodo, "semana");
   assert.equal(resumo("quanto gastei hoje")?.periodo, "hoje");
   assert.equal(resumo("gastos do mês passado")?.periodo, "mes_anterior");
   assert.deepEqual(resumo("quanto foi de mercado em outubro?"), {
-    periodo: "intervalo", inicio: "2026-10-01", fim: "2026-10-31", categoria: "Mercado",
+    periodo: "intervalo", inicio: "2026-10-01", fim: "2026-10-31", categoria: "Mercado", conta: null,
   });
   assert.deepEqual(resumo("quanto gastei em dezembro"), {
-    periodo: "intervalo", inicio: "2025-12-01", fim: "2025-12-31", categoria: null,
+    periodo: "intervalo", inicio: "2025-12-01", fim: "2025-12-31", categoria: null, conta: null,
   });
   assert.deepEqual(resumo("quanto gastei dia 3"), {
-    periodo: "intervalo", inicio: "2026-11-03", fim: "2026-11-03", categoria: null,
+    periodo: "intervalo", inicio: "2026-11-03", fim: "2026-11-03", categoria: null, conta: null,
   });
   assert.equal(resumo("quanto gastei com uber")?.categoria, "Transporte");
 });
@@ -181,7 +182,7 @@ Deno.test("corrigir, desfazer e ajuda", () => {
     assert.equal(r?.intencao, "corrigir", `"${t}" deveria corrigir`);
     return r!.correcao;
   };
-  assert.deepEqual(corr("corrigir: era 52"), { valor: "52.00", data: null, conta: null, categoria: null, descricao: null });
+  assert.deepEqual(corr("corrigir: era 52"), { valor: "52.00", data: null, conta: null, categoria: null, descricao: null, meio: null });
   assert.equal(corr("corrige: foi no nubank")?.conta, "Nubank crédito");
   assert.equal(corr("corrigir categoria mercado")?.categoria, "Mercado");
   assert.equal(corr("corrigir data ontem")?.data, "2026-11-06");
@@ -189,6 +190,64 @@ Deno.test("corrigir, desfazer e ajuda", () => {
   assert.equal(ler("desfazer o último")?.intencao, "desfazer");
   assert.equal(ler("cancela isso")?.intencao, "desfazer");
   assert.equal(ler("como funciona?")?.intencao, "ajuda");
+});
+
+Deno.test("o jeito que você escreve no dia a dia: fatura, cartão, correção curta, perguntas", () => {
+  // Sem Nubank cadastrado: o banco é reconhecido pelo nome e a conta será criada.
+  const semNubank = (texto: string) =>
+    interpretarPorRegras({
+      texto,
+      hoje: "2026-11-10",
+      diaDaSemana: "terça-feira",
+      contas: CONTAS.filter((c) => c.id !== "c-nu"),
+      categorias: CATEGORIAS_PADRAO,
+    });
+
+  const fatura = semNubank("Adicionar fatura Nubank 1547");
+  assert.equal(fatura?.intencao, "fatura");
+  assert.deepEqual(fatura?.fatura, { conta: "Nubank", valor: "1547.00", vencimento: null, paga: false });
+  assert.deepEqual(semNubank("fatura do nubank 1.547,90 vence dia 15")?.fatura, {
+    conta: "Nubank", valor: "1547.90", vencimento: "2026-11-15", paga: false,
+  });
+  assert.equal(semNubank("fatura nubank vence dia 5")?.fatura?.vencimento, "2026-12-05"); // dia 5 já passou
+  assert.equal(semNubank("fatura nubank vence dia 5")?.fatura?.valor, null);
+  assert.equal(semNubank("paguei a fatura do nubank 1547")?.fatura?.paga, true);
+
+  assert.deepEqual(semNubank("nubank fecha dia 3 e vence dia 10")?.cartao, { conta: "Nubank", diaFechamento: 3, diaVencimento: 10 });
+  assert.equal(semNubank("cartão nubank fechamento 28 vencimento 5")?.intencao, "configurar_cartao");
+
+  const parcela = semNubank("Parcela de 3x 16,78")!.lancamentos[0];
+  assert.equal(parcela.parcelas, 3);
+  assert.equal(parcela.valor_refere_se_a, "parcela");
+  assert.equal(parcela.descricao, "Compra parcelada");
+  assert.equal(parcela.meio, "credito");
+
+  const nu = semNubank("almoço 30 no nubank")!.lancamentos[0];
+  assert.equal(nu.conta, "Nubank");
+  assert.equal(nu.descricao, "Almoço");
+  assert.equal(semNubank("uber 20 no débito do nubank")!.lancamentos[0].meio, "debito");
+  assert.equal(semNubank("caixa de som 200")!.lancamentos[0].conta, null); // "caixa" aqui não é banco
+  assert.equal(semNubank("pix 50 na conta da caixa")!.lancamentos[0].conta, "Caixa");
+
+  // Correção sem "corrigir:"
+  for (const t of ["Foi no Nubank", "foi na nubank", "no nubank"]) {
+    assert.equal(semNubank(t)?.intencao, "corrigir", t);
+    assert.equal(semNubank(t)?.correcao?.conta, "Nubank", t);
+  }
+  assert.equal(semNubank("Corrigir: foi na Nubank")?.correcao?.conta, "Nubank");
+  assert.equal(semNubank("era 52")?.correcao?.valor, "52.00");
+  assert.equal(semNubank("foi no débito")?.correcao?.meio, "debito");
+  assert.equal(semNubank("foi ontem")?.correcao?.data, "2026-11-09");
+
+  // Perguntas e consultas
+  assert.equal(semNubank("Está parcela foi em qual banco")?.intencao, "ultimo");
+  assert.equal(semNubank("qual foi o último lançamento?")?.intencao, "ultimo");
+  assert.equal(semNubank("Por banco")?.intencao, "resumo");
+  assert.equal(semNubank("Resumo total")?.intencao, "resumo");
+  assert.equal(semNubank("resumo por banco")?.resumo?.conta, null);
+  assert.equal(semNubank("quanto gastei no nubank?")?.resumo?.conta, "Nubank");
+  assert.equal(semNubank("minhas contas")?.intencao, "contas");
+  assert.equal(semNubank("como está a fatura?")?.intencao, "contas");
 });
 
 Deno.test("o que não entende devolve null (sem chutar)", () => {
