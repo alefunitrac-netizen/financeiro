@@ -6,12 +6,14 @@ import type {
   Categoria,
   Conta,
   ContextoInterpretacao,
+  Acao,
   Interpretacao,
   LinhaFatura,
   LinhaResumo,
   LinhaResumoConta,
   MensagemRecebida,
   NovaConta,
+  PassoDesfazer,
   NovaTransacao,
   Repositorio,
   Transacao,
@@ -99,7 +101,24 @@ export class RepoMemoria implements Repositorio {
     this.contas.push(c);
     return Promise.resolve({ ...c });
   }
-  atualizarDiasCartao(id: string, f: number, v: number) {
+  acoes: (Acao & { desfeita: boolean })[] = [];
+  restaurarStatus(ids: string[], status: "informado" | "confirmado") {
+    for (const t of this.transacoes) if (ids.includes(t.id)) t.status = status;
+    return Promise.resolve();
+  }
+  registrarAcao(_u: string, _m: string, resumo: string, passos: PassoDesfazer[]) {
+    this.acoes.push({ id: `a${++this.seq}`, resumo, passos: structuredClone(passos), desfeita: false });
+    return Promise.resolve();
+  }
+  ultimaAcao() {
+    const a = this.acoes.filter((x) => !x.desfeita).at(-1);
+    return Promise.resolve(a ? { id: a.id, resumo: a.resumo, passos: a.passos } : null);
+  }
+  marcarDesfeita(id: string) {
+    this.acoes.find((a) => a.id === id)!.desfeita = true;
+    return Promise.resolve();
+  }
+  atualizarDiasCartao(id: string, f: number | null, v: number | null) {
     Object.assign(this.contas.find((c) => c.id === id)!, { diaFechamento: f, diaVencimento: v });
     return Promise.resolve();
   }

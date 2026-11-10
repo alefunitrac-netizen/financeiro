@@ -69,7 +69,7 @@ function linhaFatura(item: ItemLancamento, hoje: DataISO): string | null {
   return `🧾 1ª parcela na fatura de ${dataAmigavel(primeiro, hoje)}, última em ${dataAmigavel(ultimo, hoje)}.`;
 }
 
-const RODAPE = "\n\n_Errei? Responda *desfazer* ou *corrigir: …*_";
+const RODAPE = "\n_Errou? Responda *desfazer*._";
 
 export function textoRegistro(itens: ItemLancamento[], hoje: DataISO, cabecalho?: string): string {
   if (itens.length === 1 && itens[0].tipo === "pagamento_fatura") {
@@ -127,16 +127,18 @@ export function itensDeTransacoes(ts: Transacao[], contas: Conta[], categorias: 
   });
 }
 
-export function textoDesfeito(itens: ItemLancamento[]): string {
-  if (itens.length === 1) {
-    const item = itens[0];
-    const parcelas = item.valores.length > 1 ? ` (${item.valores.length} parcelas)` : "";
-    return `↩️ *Desfeito:* ${formatarReais(total(item.valores))} — ${titulo(item)}${parcelas}`;
-  }
-  return [
-    `↩️ *Desfiz ${itens.length} lançamentos:*`,
-    ...itens.map((i) => `• ${formatarReais(total(i.valores))} — ${titulo(i)}`),
-  ].join("\n");
+/** Como um registro aparece no "desfeito": "R$ 50,34 — Compra parcelada (3 parcelas)". */
+export function resumoParaDesfazer(itens: ItemLancamento[]): string {
+  return itens
+    .map((i) => {
+      const parcelas = i.valores.length > 1 ? ` (${i.valores.length} parcelas)` : "";
+      return `${formatarReais(total(i.valores))} — ${titulo(i)}${parcelas}`;
+    })
+    .join("; ");
+}
+
+export function textoDesfeito(resumo: string): string {
+  return `↩️ *Desfeito:* ${resumo}`;
 }
 
 function porcentagem(parte: number, todo: number): string {
@@ -269,9 +271,8 @@ export function textoFatura(t: Transacao, cartao: Conta | null, hoje: DataISO, c
   ];
   if (!t.dataPagamento && !cabecalho.startsWith("✅")) {
     const k = chave(cartao?.instituicao || cartao?.nome.replace(/^Cartão\s+/i, "") || "nubank").trim();
-    linhas.push(`_Quando vence? Responda: fatura ${k} vence dia 15 — ou cadastre o cartão: ${k} fecha dia 3 vence dia 10._`);
+    linhas.push(`_Quando vence? Responda: fatura ${k} vence dia 15._`);
   }
-  linhas.push("_Fica em \"faturas a pagar\" e não soma nas despesas: as despesas são as compras dentro dela._");
   return linhas.join("\n") + RODAPE;
 }
 
@@ -285,25 +286,35 @@ export function textoCartaoConfigurado(c: Conta, atualizados: number, hoje: Data
 }
 
 /** "contas"/"saldo": cada conta com o que o banco informou e as faturas em aberto. */
-export function textoContas(contas: Conta[], faturas: LinhaFatura[], hoje: DataISO): string {
+export function textoContas(contas: Conta[], faturas: LinhaFatura[], hoje: DataISO, soEstas = false): string {
   if (!contas.length) {
     return "🏦 Nenhuma conta ainda. Elas aparecem quando você cita o banco (_almoço 35 no nubank_) ou conecta pelo Meu Pluggy.";
   }
-  const linhas = ["🏦 *Suas contas*"];
+  const linhas = soEstas ? [] : ["🏦 *Suas contas*"];
   const ordem = [...contas].sort((a, b) => Number(a.tipo === "cartao_credito") - Number(b.tipo === "cartao_credito") || a.nome.localeCompare(b.nome));
   for (const c of ordem) {
-    let detalhe: string;
-    if (c.saldoCentavos == null) detalhe = "_cadastrada por você_";
-    else if (c.tipo === "cartao_credito") {
-      detalhe = `usado ${formatarReais(c.saldoCentavos)}${c.limiteCentavos ? ` de ${formatarReais(c.limiteCentavos)}` : ""}`;
-    } else detalhe = `saldo ${formatarReais(c.saldoCentavos)}`;
-    const quando = c.saldoAtualizadoEm ? ` · banco ${dataAmigavel(hojeNoFuso("America/Sao_Paulo", new Date(c.saldoAtualizadoEm)), hoje)}` : "";
-    const dias = c.tipo === "cartao_credito" && c.diaFechamento ? ` · fecha ${c.diaFechamento}, vence ${c.diaVencimento}` : "";
-    linhas.push(`• ${icone(c.tipo)} ${c.nome}: ${detalhe}${quando}${dias}`);
+    const partes: string[] = [];
+    if (c.saldoCentavos != null) {
+      partes.push(
+        c.tipo === "cartao_credito"
+          ? `usado ${formatarReais(c.saldoCentavos)}${c.limiteCentavos ? ` de ${formatarReais(c.limiteCentavos)}` : ""}`
+          : `saldo ${formatarReais(c.saldoCentavos)}`,
+      );
+      if (c.saldoAtualizadoEm) {
+        partes.push(`banco ${dataAmigavel(hojeNoFuso("America/Sao_Paulo", new Date(c.saldoAtualizadoEm)), hoje)}`);
+      }
+    }
+    if (c.tipo === "cartao_credito") {
+      partes.push(c.diaFechamento ? `fecha dia ${c.diaFechamento}, vence dia ${c.diaVencimento}` : "sem dias de fechamento e vencimento");
+    }
+    const nome = soEstas ? `${icone(c.tipo)} *${c.nome}*` : `• ${icone(c.tipo)} ${c.nome}`;
+    linhas.push(partes.length ? `${nome} · ${partes.join(" · ")}` : nome);
   }
   const blocoFaturas = linhasFaturas(faturas, hoje);
-  linhas.push(...(blocoFaturas.length ? blocoFaturas : ["", "🧾 Nenhuma fatura em aberto."]));
-  return linhas.join("\n");
+  const temCartao = contas.some((c) => c.tipo === "cartao_credito");
+  if (blocoFaturas.length) linhas.push(...blocoFaturas);
+  else if (temCartao) linhas.push("", "🧾 Nenhuma fatura em aberto.");
+  return linhas.join("\n").trim();
 }
 
 export function textoAjuda(nome: string): string {
@@ -321,9 +332,11 @@ export function textoAjuda(nome: string): string {
 • _fatura nubank 1547 vence dia 15_
 • _nubank fecha dia 3 vence dia 10_
 • _paguei a fatura do nubank 1547_
-• _contas_ mostra saldos e faturas a pagar
+• _nubank_ mostra o cartão; _contas_ mostra todas
+_A fatura fica em "a pagar" e não soma nas despesas: as despesas são as compras dela._
 
-Errou? *desfazer* cancela o último registro. Para ajustar: _era 52_, _foi no nubank_, _foi no débito_.
+*desfazer* volta a última coisa que fiz (pode repetir).
+Para ajustar o último: _era 52_, _foi no nubank_, _foi no débito_.
 _em qual banco foi?_ mostra o último registro.
 Com banco conectado, *atualizar* busca as novidades do banco.`;
 }
@@ -334,14 +347,11 @@ export function textoVinculado(nome: string): string {
 
 export const TEXTO_BOT_PRIVADO = "🔒 Este bot é privado.";
 
-export const TEXTO_NAO_ENTENDI = `🤔 Não entendi. Escreve com o valor, assim:
-
-• _almoço 35 em dinheiro_
-• _uber 23 ontem no nubank_
-• _tv 3000 em 10x no itaú_
-• _recebi 5000 de salário_
-
-Ou peça: _resumo da semana_.`;
+export const TEXTO_NAO_ENTENDI = `🤔 Não entendi. Tente assim:
+• _almoço 35 no nubank_
+• _fatura nubank 1547 vence dia 10_
+• _resumo da semana_ ou _nubank_
+Digite *ajuda* para ver tudo.`;
 
 export const TEXTO_SO_TEXTO =
   "Por enquanto eu só entendo mensagens de texto 🙂 Escreve o gasto, tipo: _almoço 35 no nubank_.";

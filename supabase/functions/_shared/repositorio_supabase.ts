@@ -1,6 +1,15 @@
 // Implementação do Repositorio sobre o Postgres do Supabase (supabase-js).
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.119.0";
-import type { CamposCorrecao, Categoria, Conta, NovaTransacao, Repositorio, Transacao, Usuario } from "./tipos.ts";
+import type {
+  CamposCorrecao,
+  Categoria,
+  Conta,
+  NovaTransacao,
+  PassoDesfazer,
+  Repositorio,
+  Transacao,
+  Usuario,
+} from "./tipos.ts";
 
 const COLUNAS_CONTA =
   "id, nome, tipo, apelidos, instituicao, dia_fechamento, dia_vencimento, saldo_centavos, limite_centavos, saldo_atualizado_em";
@@ -251,6 +260,34 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
         .update({ status: "confirmado", confirmado_em: new Date().toISOString() })
         .in("id", ids);
       if (error) falhar("confirmarTransacoes", error);
+    },
+
+    async restaurarStatus(ids, status) {
+      const { error } = await db.from("transacoes").update({ status }).in("id", ids);
+      if (error) falhar("restaurarStatus", error);
+    },
+
+    async registrarAcao(usuarioId, mensagemId, resumo, passos) {
+      const { error } = await db.from("acoes").insert({ usuario_id: usuarioId, mensagem_id: mensagemId, resumo, passos });
+      if (error) falhar("registrarAcao", error);
+    },
+
+    async ultimaAcao(usuarioId) {
+      const { data, error } = await db
+        .from("acoes")
+        .select("id, resumo, passos")
+        .eq("usuario_id", usuarioId)
+        .is("desfeita_em", null)
+        .order("criado_em", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) falhar("ultimaAcao", error);
+      return data ? { id: data.id, resumo: data.resumo, passos: data.passos as PassoDesfazer[] } : null;
+    },
+
+    async marcarDesfeita(acaoId) {
+      const { error } = await db.from("acoes").update({ desfeita_em: new Date().toISOString() }).eq("id", acaoId);
+      if (error) falhar("marcarDesfeita", error);
     },
 
     async atualizarTransacao(id, campos) {

@@ -324,8 +324,9 @@ function descricaoDe(t: Texto, categoria: string, tipo: TipoLancamento, parcelad
 
 const VAZIO = { lancamentos: [], resumo: null, correcao: null, pergunta: null };
 const RE_CORRIGIR = /^\W*(?:corrigir|corrige|corrija|corrigi|correcao|corrigindo)\b\W*/;
+// Com os erros de digitação comuns: "desafazer", "desfaze", "dezfazer", "cancelaa"...
 const RE_DESFAZER =
-  /\b(desfaz|desfazer|desfaca|cancela|cancelar|cancele|apaga|apagar|apague|exclui|excluir|exclua|remove|remover|deleta|deletar)\b/;
+  /\b(?:de[sz]\w{0,2}fa[zcç]\w*|cancel\w*|apag\w*|exclu\w*|remov\w*|delet\w*|volta\s+atras|voltar)\b/;
 const RE_RESUMO =
   /\b(resumo|extrato|balanco|relatorio|por\s+(?:banco|bancos|conta|contas|cartao|cartoes)|quanto\s+(?:eu\s+)?(?:gastei|gasto|paguei|recebi|ganhei|entrou|saiu|foi|deu)|total\s+(?:de|do|da|gasto)|gastos?\s+(?:de|do|da|dos|das|com|na|no|em|esse|este|nesse|neste))\b/;
 const RE_AJUDA = /\b(ajuda|socorro|como\s+(?:funciona|usa|usar|uso)|o\s+que\s+(?:voce|vc)\s+(?:faz|sabe)|comandos|exemplos?)\b/;
@@ -441,8 +442,9 @@ const RE_SO_LUGAR = /^\W*(?:foi\s+)?(?:no|na|em|pelo|pela|via|com)\b|^\W*foi\b/;
 const RE_ULTIMO =
   /\b(?:qual|que|onde)\b.*\b(?:banco|conta|cartao|categoria)\b|\b(?:ultimo|ultima)\s+(?:lancamento|registro|gasto|compra)\b|\bo\s+que\s+(?:eu\s+)?(?:registrei|lancei|anotei)\b|\bqual\s+foi\s+o\s+ultimo\b/;
 
-// "saldo", "minhas contas", "como está a fatura?"
-const RE_CONTAS = /\b(saldos?|minhas\s+contas|contas|faturas?|limites?)\b/;
+// "saldo", "minhas contas", "como está a fatura?", "vencimento nubank", "quando fecha o itaú?"
+const RE_CONTAS =
+  /\b(saldos?|minhas\s+contas|contas|faturas?|limites?|vencimentos?|vence|fechamento|fecha|cartoes|cartao)\b/;
 
 // ---------- Fatura do cartão ----------
 
@@ -536,11 +538,22 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
   const lancamentos = dividir(texto, ctx).map((s) => lerLancamento(s, ctx));
   const temValor = lancamentos.every((l) => l !== null);
   if (!temValor) {
-    if (RE_DESFAZER.test(k)) return { intencao: "desfazer", ...VAZIO };
+    if (RE_DESFAZER.test(k)) {
+      const alvo = /\b(vencimento|fatura|parcela|parcelado|parcelada|correcao|fechamento|dias)\b/.exec(k)?.[1] ?? null;
+      return { intencao: "desfazer", ...VAZIO, desfazerAlvo: alvo };
+    }
     if (RE_ULTIMO.test(k)) return { intencao: "ultimo", ...VAZIO };
     if (RE_RESUMO.test(k)) return { intencao: "resumo", ...VAZIO, resumo: pedidoResumo(texto, ctx) };
-    if (RE_CONTAS.test(k)) return { intencao: "contas", ...VAZIO };
     if (RE_AJUDA.test(k)) return { intencao: "ajuda", ...VAZIO };
+    if (RE_CONTAS.test(k) && !RE_SO_LUGAR.test(k)) {
+      const conta = /\b(contas|cartoes)\b/.test(k) ? null : tirarContaOuBanco(new Texto(texto), ctx.contas);
+      return { intencao: "contas", ...VAZIO, contaConsulta: conta };
+    }
+    // Só o nome do banco ("Nubank"): mostra a conta. Com "no"/"foi no" é correção (abaixo).
+    if (!RE_SO_LUGAR.test(k) && ehSoContaOuMeio(texto, ctx)) {
+      const conta = tirarContaOuBanco(new Texto(texto), ctx.contas);
+      if (conta) return { intencao: "contas", ...VAZIO, contaConsulta: conta };
+    }
     // Sem valor, só dizendo onde ou quando foi: é sobre o último lançamento.
     if (RE_SO_LUGAR.test(k) || ehSoContaOuMeio(texto, ctx)) {
       const c = lerCorrecao(texto, ctx);

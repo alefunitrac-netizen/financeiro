@@ -247,6 +247,10 @@ Deno.test("o jeito que você escreve no dia a dia: fatura, cartão, correção c
   assert.equal(semNubank("resumo por banco")?.resumo?.conta, null);
   assert.equal(semNubank("quanto gastei no nubank?")?.resumo?.conta, "Nubank");
   assert.equal(semNubank("minhas contas")?.intencao, "contas");
+  assert.equal(semNubank("Nubank")?.contaConsulta, "Nubank");
+  assert.equal(semNubank("Vencimento Nubank")?.contaConsulta, "Nubank");
+  assert.equal(semNubank("fatura nubank")?.contaConsulta, "Nubank");
+  for (const t of ["Desafazer vencimento", "desfaze", "dezfazer", "cancela"]) assert.equal(semNubank(t)?.intencao, "desfazer", t);
   assert.equal(semNubank("como está a fatura?")?.intencao, "contas");
 });
 

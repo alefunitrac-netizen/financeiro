@@ -11,7 +11,7 @@ import {
   somarMeses,
   vencimentoFatura,
 } from "./datas.ts";
-import { dividirEmParcelas, paraCentavos } from "./dinheiro.ts";
+import { dividirEmParcelas, formatarReais, paraCentavos } from "./dinheiro.ts";
 import { bancoDoTexto } from "./bancos.ts";
 import {
   type ItemLancamento,
@@ -24,6 +24,7 @@ import {
   textoAjuda,
   textoCartaoConfigurado,
   textoContas,
+  resumoParaDesfazer,
   textoDesfeito,
   textoFatura,
   textoRegistro,
@@ -46,6 +47,7 @@ import type {
   MensagemRecebida,
   NovaConta,
   NovaTransacao,
+  PassoDesfazer,
   PedidoCartao,
   PedidoFatura,
   Repositorio,
@@ -151,7 +153,7 @@ async function resolverConta(
 
 const PEDIR_DIAS = (c: Conta) => {
   const k = bancoDa(c) ? chave(bancoDa(c)!).trim() : "cartao";
-  return `Para eu saber em que fatura cada compra cai, me diga: _${k} fecha dia 3 vence dia 10_ (com os dias do seu cartão).`;
+  return `_Me diga os dias do cartão: ${k} fecha dia 3 vence dia 10._`;
 };
 
 function avisoContaCriada(c: Conta, curto = false): string {
@@ -281,16 +283,56 @@ async function registrar(lancamentos: LancamentoInterpretado[], ctx: Contexto): 
   if (novas.length === 0) {
     return { texto: avisos.join("\n") || "Não encontrei nenhum valor para registrar.", status: "processada" };
   }
-  await ctx.deps.repo.inserirTransacoes(novas);
+  const gravadas = await ctx.deps.repo.inserirTransacoes(novas);
+  await anotar(ctx, resumoParaDesfazer(itens), [{ op: "cancelar", ids: gravadas.map((t) => t.id) }]);
   const texto = textoRegistro(itens, hoje);
   return { texto: avisos.length ? `${texto}\n\n${avisos.join("\n")}` : texto, status: "processada" };
 }
 
-async function desfazer(ctx: Contexto): Promise<Resultado> {
-  const ts = await ctx.deps.repo.transacoesDaUltimaMensagem(ctx.usuario.id);
+/** Guarda como voltar atrás o que acabou de ser feito. */
+async function anotar(ctx: Contexto, resumo: string, passos: PassoDesfazer[]) {
+  if (passos.length) await ctx.deps.repo.registrarAcao(ctx.usuario.id, ctx.mensagemId, resumo.slice(0, 300), passos);
+}
+
+/** Desfaz a ÚLTIMA ação, seja ela um registro, uma correção, um vencimento ou os dias do cartão. */
+/** Palavra que precisa aparecer no resumo da ação para "desfazer <alvo>" bater com ela. */
+const ALVOS: Record<string, [string, string]> = {
+  vencimento: ["vencimento", "o vencimento"],
+  fatura: ["fatura", "a fatura"],
+  parcela: ["parcela", "a compra parcelada"],
+  parcelado: ["parcela", "a compra parcelada"],
+  parcelada: ["parcela", "a compra parcelada"],
+  correcao: ["correcao", "uma correção"],
+  fechamento: ["fechamento", "os dias do cartão"],
+  dias: ["fechamento", "os dias do cartão"],
+};
+
+async function desfazer(ctx: Contexto, alvo?: string | null): Promise<Resultado> {
+  const { repo } = ctx.deps;
+  const acao = await repo.ultimaAcao(ctx.usuario.id);
+  if (acao && alvo && ALVOS[alvo] && !chave(acao.resumo).includes(ALVOS[alvo][0])) {
+    // "desfazer vencimento", mas a última coisa feita foi outra: não desfaz às cegas.
+    return {
+      texto: `🤔 A última coisa que fiz foi ${acao.resumo}, não ${ALVOS[alvo][1]}.\n` +
+        `Se quiser voltar isso, responda *desfazer*.`,
+      status: "processada",
+    };
+  }
+  if (acao) {
+    for (const p of [...acao.passos].reverse()) {
+      if (p.op === "cancelar") await repo.cancelarTransacoes(p.ids);
+      else if (p.op === "status") await repo.restaurarStatus(p.ids, p.status);
+      else if (p.op === "campos") await repo.atualizarTransacao(p.id, p.campos);
+      else await repo.atualizarDiasCartao(p.contaId, p.diaFechamento, p.diaVencimento);
+    }
+    await repo.marcarDesfeita(acao.id);
+    return { texto: textoDesfeito(acao.resumo), status: "processada" };
+  }
+  // Lançamentos de antes do histórico de ações: desfaz a última mensagem inteira.
+  const ts = await repo.transacoesDaUltimaMensagem(ctx.usuario.id);
   if (ts.length === 0) return { texto: "Não encontrei nenhum lançamento para desfazer.", status: "processada" };
-  await ctx.deps.repo.cancelarTransacoes(ts.map((t) => t.id));
-  return { texto: textoDesfeito(itensDeTransacoes(ts, ctx.contas, ctx.categorias)), status: "processada" };
+  await repo.cancelarTransacoes(ts.map((t) => t.id));
+  return { texto: textoDesfeito(resumoParaDesfazer(itensDeTransacoes(ts, ctx.contas, ctx.categorias))), status: "processada" };
 }
 
 async function corrigir(correcao: Interpretacao["correcao"], ctx: Contexto): Promise<Resultado> {
@@ -337,6 +379,7 @@ async function corrigir(correcao: Interpretacao["correcao"], ctx: Contexto): Pro
   }
 
   const atualizadas = [];
+  const passos: PassoDesfazer[] = [];
   for (const t of ts) {
     const campos: CamposCorrecao = { ...comum };
     if (novoValor !== null) campos.valorCentavos = novoValor;
@@ -346,8 +389,14 @@ async function corrigir(correcao: Interpretacao["correcao"], ctx: Contexto): Pro
       campos.dataPagamento = dataDePagamento(campos.dataTransacao ?? t.dataTransacao, conta);
     }
     if (Object.keys(campos).length === 0) continue;
+    const antes = Object.fromEntries(Object.keys(campos).map((k) => [k, t[k as keyof CamposCorrecao]])) as CamposCorrecao;
+    passos.push({ op: "campos", id: t.id, campos: antes });
     await ctx.deps.repo.atualizarTransacao(t.id, campos);
     atualizadas.push({ ...t, ...campos });
+  }
+  if (atualizadas.length) {
+    const itens = itensDeTransacoes(ts, ctx.contas, ctx.categorias);
+    await anotar(ctx, `a correção de ${resumoParaDesfazer(itens)}`, passos);
   }
 
   if (atualizadas.length === 0) return { texto: avisos.join("\n") || "Nada para corrigir.", status: "processada" };
@@ -405,7 +454,11 @@ async function registrarFatura(f: PedidoFatura, ctx: Contexto): Promise<Resultad
     if (!ultima) {
       return { texto: `🧾 Não achei fatura do ${cartao.nome}. Mande com o valor: _fatura ${chave(bancoDa(cartao) ?? "nubank").trim()} 1547 vence dia 15_.`, status: "processada" };
     }
+    const antes = ultima.dataPagamento;
     await repo.atualizarTransacao(ultima.id, { dataPagamento: f.vencimento });
+    await anotar(ctx, `o vencimento da fatura do ${cartao.nome}`, [
+      { op: "campos", id: ultima.id, campos: { dataPagamento: antes } },
+    ]);
     return { texto: textoFatura({ ...ultima, dataPagamento: f.vencimento }, cartao, ctx.hoje, "✏️ *Fatura atualizada:*"), status: "processada" };
   }
 
@@ -413,14 +466,21 @@ async function registrarFatura(f: PedidoFatura, ctx: Contexto): Promise<Resultad
   if (valor === null) return { texto: `⚠️ Não entendi o valor da fatura. Ex.: _fatura nubank 1547,90_.`, status: "processada" };
 
   let vencimento = f.vencimento ?? proximoVencimento(cartao, ctx.hoje);
+  const passos: PassoDesfazer[] = [];
   if (f.paga) {
     // Paga agora: as que estavam em aberto saem da lista de "a pagar".
-    if (abertas.length) await repo.confirmarTransacoes(abertas.map((a) => a.id));
+    if (abertas.length) {
+      await repo.confirmarTransacoes(abertas.map((a) => a.id));
+      passos.push({ op: "status", ids: abertas.map((a) => a.id), status: "informado" });
+    }
     vencimento = f.vencimento ?? ctx.hoje;
   } else {
     // Informar de novo a mesma fatura troca o valor, em vez de somar.
     const repetidas = abertas.filter((a) => !a.dataPagamento || !vencimento || a.dataPagamento === vencimento);
-    if (repetidas.length) await repo.cancelarTransacoes(repetidas.map((a) => a.id));
+    if (repetidas.length) {
+      await repo.cancelarTransacoes(repetidas.map((a) => a.id));
+      passos.push({ op: "status", ids: repetidas.map((a) => a.id), status: "informado" });
+    }
   }
   const [gravada] = await repo.inserirTransacoes([{
     usuarioId: ctx.usuario.id,
@@ -439,6 +499,8 @@ async function registrarFatura(f: PedidoFatura, ctx: Contexto): Promise<Resultad
     parcelaTotal: null,
     grupoParcelamento: null,
   }]);
+  passos.push({ op: "cancelar", ids: [gravada.id] });
+  await anotar(ctx, `${f.paga ? "o pagamento" : "a fatura"} de ${formatarReais(valor)} do ${cartao.nome}`, passos);
   const texto = textoFatura(gravada, cartao, ctx.hoje, f.paga ? "✅ *Fatura paga:*" : undefined);
   return { texto: avisos.length ? `${texto}\n\n${avisos.join("\n")}` : texto, status: "processada" };
 }
@@ -451,6 +513,9 @@ async function configurarCartao(p: PedidoCartao, ctx: Contexto): Promise<Resulta
   if (!cartao || cartao.tipo !== "cartao_credito") {
     return { texto: "💳 De qual cartão? Ex.: _nubank fecha dia 3 vence dia 10_.", status: "processada" };
   }
+  const passos: PassoDesfazer[] = [
+    { op: "dias_cartao", contaId: cartao.id, diaFechamento: cartao.diaFechamento, diaVencimento: cartao.diaVencimento },
+  ];
   await repo.atualizarDiasCartao(cartao.id, p.diaFechamento, p.diaVencimento);
   cartao.diaFechamento = p.diaFechamento;
   cartao.diaVencimento = p.diaVencimento;
@@ -462,8 +527,10 @@ async function configurarCartao(p: PedidoCartao, ctx: Contexto): Promise<Resulta
       ? proximaDataComDia(ctx.hoje, p.diaVencimento)
       : vencimentoFatura(t.dataTransacao, p.diaFechamento, p.diaVencimento);
     await repo.atualizarTransacao(t.id, { dataPagamento: pagamento });
+    passos.push({ op: "campos", id: t.id, campos: { dataPagamento: null } });
     atualizados++;
   }
+  await anotar(ctx, `os dias de fechamento e vencimento do ${cartao.nome}`, passos);
   return { texto: textoCartaoConfigurado(cartao, atualizados, ctx.hoje), status: "processada" };
 }
 
@@ -478,9 +545,27 @@ async function mostrarUltimo(ctx: Contexto): Promise<Resultado> {
   return { texto, status: "processada" };
 }
 
-async function mostrarContas(ctx: Contexto): Promise<Resultado> {
-  const faturas = await ctx.deps.repo.faturasAbertas(ctx.usuario.id, ctx.hoje);
-  return { texto: textoContas(ctx.contas, faturas, ctx.hoje), status: "processada" };
+/** Conta citada numa consulta (sem criar nada): por nome/apelido ou pelo banco. */
+function contaDaConsulta(nome: string, ctx: Contexto): Conta[] {
+  const exata = encontrarConta(nome, ctx.contas);
+  const banco = exata ? bancoDa(exata) : bancoDoTexto(nome);
+  const doBanco = banco ? ctx.contas.filter((c) => bancoDa(c) === banco) : [];
+  return doBanco.length ? doBanco : exata ? [exata] : [];
+}
+
+async function mostrarContas(ctx: Contexto, nome?: string | null): Promise<Resultado> {
+  let contas = ctx.contas;
+  if (nome) {
+    contas = contaDaConsulta(nome, ctx);
+    if (!contas.length) {
+      return { texto: `🏦 Ainda não tenho *${nome}*. A conta aparece quando você registrar algo nela.`, status: "processada" };
+    }
+  }
+  const ids = new Set(contas.map((c) => c.id));
+  const faturas = (await ctx.deps.repo.faturasAbertas(ctx.usuario.id, ctx.hoje)).filter((f) => ids.has(f.contaId));
+  const texto = textoContas(contas, faturas, ctx.hoje, Boolean(nome));
+  const semDias = contas.find((c) => c.tipo === "cartao_credito" && !c.diaFechamento);
+  return { texto: semDias ? `${texto}\n\n${PEDIR_DIAS(semDias)}` : texto, status: "processada" };
 }
 
 async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: string, deps: Dependencias) {
@@ -522,7 +607,7 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
       resultado = await resumir(interpretacao.resumo, ctx);
       break;
     case "desfazer":
-      resultado = await desfazer(ctx);
+      resultado = await desfazer(ctx, interpretacao.desfazerAlvo);
       break;
     case "corrigir":
       resultado = await corrigir(interpretacao.correcao, ctx);
@@ -544,7 +629,7 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
       resultado = await mostrarUltimo(ctx);
       break;
     case "contas":
-      resultado = await mostrarContas(ctx);
+      resultado = await mostrarContas(ctx, interpretacao.contaConsulta);
       break;
     case "esclarecer":
       resultado = {

@@ -103,5 +103,60 @@ Deno.test("resumo separa por conta, por categoria e mostra as faturas", async ()
   assert.match(await enviar("Por banco"), /_Por conta_/);
   const contas = await enviar("contas");
   assert.match(contas, /Suas contas/);
-  assert.match(contas, /Cartão Nubank: _cadastrada por você_ · fecha 3, vence 10/);
+  assert.match(contas, /• 💳 Cartão Nubank · fecha dia 3, vence dia 10/);
+});
+
+Deno.test("desfazer volta a ÚLTIMA ação, na ordem, e as perguntas sobre o cartão são entendidas", async () => {
+  const { repo, enviar } = semNubank();
+  await enviar("Adicionar fatura Nubank 1547");
+  await enviar("Parcela de 3x 16,78");
+  await enviar("foi no nubank");
+  const cartao = repo.contas.find((c) => c.nome === "Cartão Nubank")!;
+
+  // "Nubank" sozinho mostra o cartão, não mexe em nada.
+  const nu = await enviar("Nubank");
+  assert.match(nu, /💳 Cartão Nubank/);
+  assert.match(nu, /Faturas a pagar: R\$ 1\.547,00/);
+  assert.match(nu, /nubank fecha dia 3 vence dia 10/); // pede os dias do cartão
+  assert.ok(!nu.includes("Corrigido"));
+
+  const venc = await enviar("Fatura Nubank vence dia 10");
+  assert.match(venc, /Fatura atualizada/);
+  const fatura = () => repo.transacoes.find((t) => t.tipo === "pagamento_fatura")!;
+  assert.equal(fatura().dataPagamento, "2026-11-10");
+
+  // O desfazer volta o vencimento, não a compra parcelada.
+  assert.match(await enviar("Desfazer"), /Desfeito:\* o vencimento da fatura do Cartão Nubank/);
+  assert.equal(fatura().dataPagamento, null);
+  assert.equal(repo.ativas().filter((t) => t.tipo === "despesa").length, 3);
+
+  // "desfazer vencimento" de novo: o vencimento já foi desfeito, então avisa em vez de desfazer outra coisa.
+  assert.match(await enviar("Desafazer vencimento"), /A última coisa que fiz foi a correção de R\$ 50,34/);
+  assert.ok(repo.ativas().filter((t) => t.tipo === "despesa").every((t) => t.contaId === cartao.id));
+  // Com erro de digitação e sem alvo: volta a correção de conta ("foi no nubank").
+  assert.match(await enviar("desfaze"), /Desfeito:\* a correção de R\$ 50,34 — Compra parcelada \(3 parcelas\)/);
+  assert.ok(repo.ativas().filter((t) => t.tipo === "despesa").every((t) => t.contaId === null));
+
+  // E de novo: agora sim a compra parcelada.
+  assert.match(await enviar("desfazer"), /Desfeito:\* R\$ 50,34 — Compra parcelada \(3 parcelas\)/);
+  assert.equal(repo.ativas().filter((t) => t.tipo === "despesa").length, 0);
+  assert.equal(fatura().status, "informado"); // a fatura continua
+
+  const vn = await enviar("Vencimento Nubank");
+  assert.match(vn, /^💳 \*Cartão Nubank\* · sem dias de fechamento e vencimento/);
+  assert.match(vn, /vencimento a definir/);
+  assert.match(await enviar("quando vence a fatura do nubank?"), /Cartão Nubank/);
+
+  // Dias do cartão também se desfazem, e as datas calculadas voltam.
+  await enviar("nubank fecha dia 3 vence dia 10");
+  assert.equal(fatura().dataPagamento, "2026-11-10");
+  assert.match(await enviar("desfazer"), /os dias de fechamento e vencimento do Cartão Nubank/);
+  assert.equal(repo.contas.find((c) => c.id === cartao.id)!.diaFechamento, null);
+  assert.equal(fatura().dataPagamento, null);
+
+  // Fatura informada de novo troca o valor; desfazer traz a anterior de volta.
+  await enviar("fatura nubank 1600");
+  assert.deepEqual(repo.ativas().filter((t) => t.tipo === "pagamento_fatura").map((t) => t.valorCentavos), [160000]);
+  await enviar("desfazer");
+  assert.deepEqual(repo.ativas().filter((t) => t.tipo === "pagamento_fatura").map((t) => t.valorCentavos), [154700]);
 });

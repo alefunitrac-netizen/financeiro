@@ -84,6 +84,20 @@ export type CamposCorrecao = Partial<
   >
 >;
 
+/** Como voltar uma ação atrás (o "desfazer"). Aplicados do último para o primeiro. */
+export type PassoDesfazer =
+  | { op: "cancelar"; ids: string[] }
+  | { op: "status"; ids: string[]; status: "informado" | "confirmado" }
+  | { op: "campos"; id: string; campos: CamposCorrecao }
+  | { op: "dias_cartao"; contaId: string; diaFechamento: number | null; diaVencimento: number | null };
+
+export interface Acao {
+  id: string;
+  /** O que volta, em palavras: "R$ 50,34 — Compra parcelada (3 parcelas)", "o vencimento da fatura do Cartão Nubank". */
+  resumo: string;
+  passos: PassoDesfazer[];
+}
+
 export interface LinhaResumo {
   tipo: TipoLancamento;
   categoria: string;
@@ -135,7 +149,7 @@ export interface Repositorio {
   ): Promise<void>;
   listarContas(usuarioId: string): Promise<Conta[]>;
   criarConta(usuarioId: string, dados: NovaConta): Promise<Conta>;
-  atualizarDiasCartao(contaId: string, diaFechamento: number, diaVencimento: number): Promise<void>;
+  atualizarDiasCartao(contaId: string, diaFechamento: number | null, diaVencimento: number | null): Promise<void>;
   /** Faturas que você informou e que ainda não foram pagas, de um cartão. */
   faturasInformadas(usuarioId: string, contaId: string): Promise<Transacao[]>;
   /** Lançamentos ativos da conta que ainda não têm data de pagamento (cartão sem fechamento/vencimento). */
@@ -146,6 +160,12 @@ export interface Repositorio {
   transacoesDaUltimaMensagem(usuarioId: string): Promise<Transacao[]>;
   cancelarTransacoes(ids: string[]): Promise<void>;
   confirmarTransacoes(ids: string[]): Promise<void>;
+  /** Volta o status (usado pelo desfazer: o que foi cancelado ou confirmado volta a ser o que era). */
+  restaurarStatus(ids: string[], status: "informado" | "confirmado"): Promise<void>;
+  registrarAcao(usuarioId: string, mensagemId: string, resumo: string, passos: PassoDesfazer[]): Promise<void>;
+  /** Última ação ainda não desfeita. */
+  ultimaAcao(usuarioId: string): Promise<Acao | null>;
+  marcarDesfeita(acaoId: string): Promise<void>;
   atualizarTransacao(id: string, campos: CamposCorrecao): Promise<void>;
   resumoPorCategoria(usuarioId: string, inicio: DataISO, fim: DataISO, contaId?: string): Promise<LinhaResumo[]>;
   resumoPorConta(usuarioId: string, inicio: DataISO, fim: DataISO): Promise<LinhaResumoConta[]>;
@@ -226,6 +246,10 @@ export interface Interpretacao {
   } | null;
   fatura?: PedidoFatura | null;
   cartao?: PedidoCartao | null;
+  /** Intenção "desfazer": o que a pessoa disse que quer desfazer ("desfazer vencimento"). */
+  desfazerAlvo?: string | null;
+  /** Intenção "contas": mostrar só esta conta ("nubank", "vencimento nubank"). */
+  contaConsulta?: string | null;
   /** Pergunta curta quando faltou informação (intenção "esclarecer"). */
   pergunta: string | null;
 }
