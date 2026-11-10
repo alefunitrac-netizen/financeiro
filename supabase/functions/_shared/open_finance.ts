@@ -140,7 +140,6 @@ export interface DadosContaBanco {
   saldoCentavos: number | null;
 }
 
-
 /**
  * Banco de uma conta. Pelo Meu Pluggy o conector se chama "MeuPluggy" e um item pode trazer
  * vários bancos, então o banco sai do nome da conta ("itau", "Itaú Click Múltiplo MC Plat").
