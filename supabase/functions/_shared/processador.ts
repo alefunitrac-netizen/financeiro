@@ -294,7 +294,6 @@ async function anotar(ctx: Contexto, resumo: string, passos: PassoDesfazer[]) {
   if (passos.length) await ctx.deps.repo.registrarAcao(ctx.usuario.id, ctx.mensagemId, resumo.slice(0, 300), passos);
 }
 
-/** Desfaz a ÚLTIMA ação, seja ela um registro, uma correção, um vencimento ou os dias do cartão. */
 /** Palavra que precisa aparecer no resumo da ação para "desfazer <alvo>" bater com ela. */
 const ALVOS: Record<string, [string, string]> = {
   vencimento: ["vencimento", "o vencimento"],
@@ -307,6 +306,7 @@ const ALVOS: Record<string, [string, string]> = {
   dias: ["fechamento", "os dias do cartão"],
 };
 
+/** Desfaz a ÚLTIMA ação, seja ela um registro, uma correção, um vencimento ou os dias do cartão. */
 async function desfazer(ctx: Contexto, alvo?: string | null): Promise<Resultado> {
   const { repo } = ctx.deps;
   const acao = await repo.ultimaAcao(ctx.usuario.id);
