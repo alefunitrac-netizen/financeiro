@@ -1,5 +1,6 @@
 // Implementações em memória para testar o núcleo sem banco, sem canal de mensagem e sem IA.
 import type { Dependencias } from "../_shared/processador.ts";
+import { chave, contemTermo } from "../_shared/texto.ts";
 import type {
   CamposCorrecao,
   Canal,
@@ -12,8 +13,10 @@ import type {
   LinhaResumo,
   LinhaResumoConta,
   MensagemRecebida,
+  LancamentoResumido,
   NovaConta,
   PassoDesfazer,
+  RegraCategoria,
   NovaTransacao,
   Repositorio,
   Transacao,
@@ -40,6 +43,7 @@ export const CATEGORIAS: Categoria[] = [
   { id: "k-transp", nome: "Transporte", tipo: "despesa" },
   { id: "k-compras", nome: "Compras", tipo: "despesa" },
   { id: "k-mercado", nome: "Mercado", tipo: "despesa" },
+  { id: "k-moradia", nome: "Moradia", tipo: "despesa" },
   { id: "k-outros", nome: "Outros", tipo: "despesa" },
   { id: "k-sal", nome: "Salário", tipo: "receita" },
   { id: "k-outrasr", nome: "Outras receitas", tipo: "receita" },
@@ -188,6 +192,38 @@ export class RepoMemoria implements Repositorio {
       mapa.set(chave, l);
     }
     return Promise.resolve([...mapa.values()]);
+  }
+  regras: (RegraCategoria & { ativa: boolean })[] = [];
+  lancamentos(_u: string, inicio: string, fim: string, f: { categoriaId?: string; contaId?: string; limite: number }) {
+    const todos = this.ativas()
+      .filter((t) => t.tipo !== "pagamento_fatura" && t.dataTransacao >= inicio && t.dataTransacao <= fim)
+      .filter((t) => (!f.categoriaId || t.categoriaId === f.categoriaId) && (!f.contaId || t.contaId === f.contaId))
+      .sort((a, b) => b.valorCentavos - a.valorCentavos);
+    const itens: LancamentoResumido[] = todos.slice(0, f.limite).map((t) => ({
+      descricao: t.descricao,
+      valorCentavos: t.valorCentavos,
+      dataTransacao: t.dataTransacao,
+      conta: this.contas.find((c) => c.id === t.contaId)?.nome ?? null,
+      categoria: CATEGORIAS.find((c) => c.id === t.categoriaId)?.nome ?? null,
+    }));
+    return Promise.resolve({ itens, total: todos.length });
+  }
+  listarRegras() {
+    return Promise.resolve(this.regras.filter((r) => r.ativa).map(({ id, termo, categoriaId }) => ({ id, termo, categoriaId })));
+  }
+  criarRegra(_u: string, termo: string, categoriaId: string) {
+    const id = `r${++this.seq}`;
+    this.regras.push({ id, termo, categoriaId, ativa: true });
+    return Promise.resolve(id);
+  }
+  desativarRegra(id: string) {
+    this.regras.find((r) => r.id === id)!.ativa = false;
+    return Promise.resolve();
+  }
+  transacoesComTermo(_u: string, termo: string, tipo: string) {
+    return Promise.resolve(
+      this.ativas().filter((t) => t.tipo === tipo && contemTermo(chave(t.descricao), termo)) as Transacao[],
+    );
   }
   faturasAbertas(_u: string, hoje: string): Promise<LinhaFatura[]> {
     const saida: LinhaFatura[] = [];

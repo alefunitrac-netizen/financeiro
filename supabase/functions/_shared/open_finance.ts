@@ -6,8 +6,9 @@ import { dataAmigavel, hojeNoFuso, somarDias, vencimentoFatura } from "./datas.t
 import { formatarReais } from "./dinheiro.ts";
 import { bancoDoTexto } from "./bancos.ts";
 import { categoriaPorTexto } from "./interpretador_regras.ts";
+import { categoriaPorRegra } from "./regras.ts";
 import { chave } from "./texto.ts";
-import type { Categoria, DataISO, TipoConta } from "./tipos.ts";
+import type { Categoria, DataISO, RegraCategoria, TipoConta } from "./tipos.ts";
 
 const API = "https://api.pluggy.ai";
 
@@ -342,6 +343,7 @@ export interface RepositorioBanco {
   listarConexoes(usuarioId?: string): Promise<ConexaoBanco[]>;
   salvarConta(usuarioId: string, dados: DadosContaBanco): Promise<ContaSalva>;
   listarCategorias(usuarioId: string): Promise<Categoria[]>;
+  listarRegras(usuarioId: string): Promise<RegraCategoria[]>;
   buscarPorExternos(usuarioId: string, externos: string[]): Promise<TransacaoSalva[]>;
   informadosParaConciliar(usuarioId: string, inicio: DataISO, fim: DataISO): Promise<Informado[]>;
   confirmar(id: string, b: TransacaoBanco): Promise<void>;
@@ -400,6 +402,7 @@ export async function sincronizarConexao(
   }
 
   const categorias = await repo.listarCategorias(conexao.usuarioId);
+  const regras = await repo.listarRegras(conexao.usuarioId);
   const porNome = new Map(categorias.map((c) => [c.nome, c]));
   const informados = await repo.informadosParaConciliar(conexao.usuarioId, somarDias(de, -5), somarDias(ate, 5));
   const resultado: ResultadoSincronizacao = { instituicao: "", novas: [], confirmadas: 0, canceladas: 0, avisos };
@@ -444,8 +447,11 @@ export async function sincronizarConexao(
         resultado.confirmadas++;
         continue;
       }
+      // O que você ensinou ("roberto é moradia") vale mais que as palavras-chave.
       const nomeCategoria = b.tipo === "despesa" || b.tipo === "receita"
-        ? categoriaPorTexto(b.descricao, b.tipo, categorias) ?? (b.tipo === "receita" ? "Outras receitas" : "Outros")
+        ? categoriaPorRegra(b.descricao, b.tipo, regras, categorias)?.nome ??
+          categoriaPorTexto(b.descricao, b.tipo, categorias) ??
+          (b.tipo === "receita" ? "Outras receitas" : "Outros")
         : null;
       const categoria = nomeCategoria ? porNome.get(nomeCategoria) ?? null : null;
       novas.push({ ...b, categoriaId: categoria?.id ?? null });

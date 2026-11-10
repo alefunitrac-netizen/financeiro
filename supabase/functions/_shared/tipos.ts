@@ -89,7 +89,24 @@ export type PassoDesfazer =
   | { op: "cancelar"; ids: string[] }
   | { op: "status"; ids: string[]; status: "informado" | "confirmado" }
   | { op: "campos"; id: string; campos: CamposCorrecao }
-  | { op: "dias_cartao"; contaId: string; diaFechamento: number | null; diaVencimento: number | null };
+  | { op: "dias_cartao"; contaId: string; diaFechamento: number | null; diaVencimento: number | null }
+  | { op: "desativar_regra"; id: string };
+
+/** "roberto é moradia": termo (minúsculo, sem acento) que, na descrição, leva à categoria. */
+export interface RegraCategoria {
+  id: string;
+  termo: string;
+  categoriaId: string;
+}
+
+/** Um lançamento como aparece numa lista ("o que é outros?"). */
+export interface LancamentoResumido {
+  descricao: string;
+  valorCentavos: number;
+  dataTransacao: DataISO;
+  conta: string | null;
+  categoria: string | null;
+}
 
 export interface Acao {
   id: string;
@@ -170,6 +187,18 @@ export interface Repositorio {
   resumoPorCategoria(usuarioId: string, inicio: DataISO, fim: DataISO, contaId?: string): Promise<LinhaResumo[]>;
   resumoPorConta(usuarioId: string, inicio: DataISO, fim: DataISO): Promise<LinhaResumoConta[]>;
   faturasAbertas(usuarioId: string, hoje: DataISO): Promise<LinhaFatura[]>;
+  /** Maiores lançamentos do período (despesas e receitas), com filtro opcional; e quantos existem no total. */
+  lancamentos(
+    usuarioId: string,
+    inicio: DataISO,
+    fim: DataISO,
+    filtro: { categoriaId?: string; contaId?: string; limite: number },
+  ): Promise<{ itens: LancamentoResumido[]; total: number }>;
+  listarRegras(usuarioId: string): Promise<RegraCategoria[]>;
+  criarRegra(usuarioId: string, termo: string, categoriaId: string): Promise<string>;
+  desativarRegra(id: string): Promise<void>;
+  /** Despesas ou receitas ativas cuja descrição contém o termo (para aplicar uma regra nova). */
+  transacoesComTermo(usuarioId: string, termo: string, tipo: TipoLancamento): Promise<Transacao[]>;
 }
 
 // ---------- Saída do interpretador (modelo de IA) ----------
@@ -184,6 +213,7 @@ export type Intencao =
   | "configurar_cartao"
   | "ultimo"
   | "contas"
+  | "categorizar"
   | "esclarecer"
   | "fora_do_escopo";
 
@@ -248,6 +278,8 @@ export interface Interpretacao {
   cartao?: PedidoCartao | null;
   /** Intenção "desfazer": o que a pessoa disse que quer desfazer ("desfazer vencimento"). */
   desfazerAlvo?: string | null;
+  /** Intenção "categorizar": "roberto é moradia". */
+  regra?: { termo: string; categoria: string } | null;
   /** Intenção "contas": mostrar só esta conta ("nubank", "vencimento nubank"). */
   contaConsulta?: string | null;
   /** Pergunta curta quando faltou informação (intenção "esclarecer"). */

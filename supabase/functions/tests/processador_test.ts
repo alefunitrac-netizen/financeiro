@@ -173,11 +173,10 @@ Deno.test("resumo do mês soma por categoria e ignora cancelados", async () => {
   await processarMensagem(mensagem("resumo"), deps);
 
   const texto = enviadas.at(-1)!.texto;
-  assert.match(texto, /Resumo — novembro\/2026/);
-  assert.match(texto, /Despesas: R\$ 400,00/);
-  assert.match(texto, /Mercado: R\$ 300,00 \(75%\)/);
-  assert.match(texto, /Alimentação: R\$ 100,00 \(25%\)/);
-  assert.match(texto, /Saldo do período:\* R\$ 600,00/);
+  assert.match(texto, /📊 \*Novembro\/2026\*/);
+  assert.match(texto, /💰 Entrou: \*R\$ 1\.000,00\*\n💸 Saiu: \*R\$ 400,00\*\n📈 Saldo: \*R\$ 600,00\*/);
+  assert.match(texto, /\*Para onde foi\*\n• Mercado: R\$ 300,00\n• Alimentação: R\$ 100,00/);
+  assert.match(texto, /\*De onde veio\*\n• Salário: R\$ 1\.000,00/);
   assert.doesNotMatch(texto, /999/);
 });
 
@@ -191,7 +190,7 @@ Deno.test("resumo por intervalo livre e por categoria", async () => {
   ]);
   await processarMensagem(mensagem("mercado 80 dia 15/10"), deps);
   await processarMensagem(mensagem("quanto foi de mercado em outubro?"), deps);
-  assert.match(enviadas[1].texto, /\*Mercado\* em 01\/10 a 31\/10: R\$ 80,00 \(1 lançamento\)/);
+  assert.match(enviadas[1].texto, /📂 \*Mercado\* · 01\/10 a 31\/10: \*R\$ 80,00\* \(1 lançamento\)\n• R\$ 80,00 — Almoço · 15\/10/);
 });
 
 Deno.test("número desconhecido é ignorado em silêncio", async () => {

@@ -23,14 +23,17 @@ import {
   TEXTO_SO_TEXTO,
   textoAjuda,
   textoCartaoConfigurado,
+  textoCategorizado,
   textoContas,
   resumoParaDesfazer,
   textoDesfeito,
   textoFatura,
   textoRegistro,
+  textoCategoria,
   textoResumo,
   textoVinculado,
 } from "./respostas.ts";
+import { categoriaPorRegra } from "./regras.ts";
 import { normalizarWhatsapp } from "./telefone.ts";
 import { chave } from "./texto.ts";
 import type {
@@ -208,6 +211,7 @@ interface Contexto {
 
 async function registrar(lancamentos: LancamentoInterpretado[], ctx: Contexto): Promise<Resultado> {
   const { hoje, categorias } = ctx;
+  const regras = await ctx.deps.repo.listarRegras(ctx.usuario.id);
   const novas: NovaTransacao[] = [];
   const itens: ItemLancamento[] = [];
   const avisos: string[] = [];
@@ -232,7 +236,11 @@ async function registrar(lancamentos: LancamentoInterpretado[], ctx: Contexto): 
     else if (conta?.tipo === "cartao_credito" && !conta.diaFechamento && !avisos.some((a) => a.includes(conta.nome))) {
       avisos.push(`ℹ️ ${conta.nome} sem fechamento e vencimento. ${PEDIR_DIAS(conta)}`);
     }
-    const categoria = encontrarCategoria(l.categoria, l.tipo, categorias);
+    let categoria = encontrarCategoria(l.categoria, l.tipo, categorias);
+    // Sem categoria clara, vale o que você ensinou ("roberto é moradia").
+    if (!categoria || ["outros", "outras receitas"].includes(normalizar(categoria.nome))) {
+      categoria = categoriaPorRegra(l.descricao, l.tipo, regras, categorias) ?? categoria;
+    }
 
     let n = l.parcelas !== null && l.parcelas >= 2 ? l.parcelas : 1;
     if (n > MAX_PARCELAS) {
@@ -323,6 +331,7 @@ async function desfazer(ctx: Contexto, alvo?: string | null): Promise<Resultado>
       if (p.op === "cancelar") await repo.cancelarTransacoes(p.ids);
       else if (p.op === "status") await repo.restaurarStatus(p.ids, p.status);
       else if (p.op === "campos") await repo.atualizarTransacao(p.id, p.campos);
+      else if (p.op === "desativar_regra") await repo.desativarRegra(p.id);
       else await repo.atualizarDiasCartao(p.contaId, p.diaFechamento, p.diaVencimento);
     }
     await repo.marcarDesfeita(acao.id);
@@ -423,17 +432,36 @@ async function resumir(pedido: Interpretacao["resumo"], ctx: Contexto): Promise<
       ctx.contas.find((c) => bancoDa(c) !== null && bancoDa(c) === bancoDoTexto(p.conta!)) ?? null;
     if (!conta) return { texto: `📊 Não tenho a conta *${p.conta}* ainda. Ela aparece quando você registrar algo nela.`, status: "processada" };
   }
-  const [categorias, porConta, faturas] = await Promise.all([
+  // "o que é outros?" / "quanto foi de mercado?": lista os lançamentos da categoria.
+  const categoria = p.categoria
+    ? ctx.categorias.find((c) => normalizar(c.nome) === normalizar(p.categoria!)) ?? null
+    : null;
+  if (p.categoria && !categoria) {
+    return { texto: `📂 Não tenho a categoria *${p.categoria}*.`, status: "processada" };
+  }
+  if (categoria) {
+    const [lista, somas] = await Promise.all([
+      repo.lancamentos(ctx.usuario.id, intervalo.inicio, intervalo.fim, { categoriaId: categoria.id, contaId: conta?.id, limite: 10 }),
+      repo.resumoPorCategoria(ctx.usuario.id, intervalo.inicio, intervalo.fim, conta?.id),
+    ]);
+    const soma = somas.find((l) => l.tipo === categoria.tipo && l.categoria === categoria.nome)?.totalCentavos ?? 0;
+    return {
+      texto: textoCategoria(categoria, intervalo.rotulo, conta, lista.itens, lista.total, soma, ctx.hoje),
+      status: "processada",
+    };
+  }
+
+  const reservas = ctx.categorias.filter((c) => ["outros", "outras receitas"].includes(normalizar(c.nome)));
+  const [categorias, porConta, faturas, ...semCategoria] = await Promise.all([
     repo.resumoPorCategoria(ctx.usuario.id, intervalo.inicio, intervalo.fim, conta?.id),
-    repo.resumoPorConta(ctx.usuario.id, intervalo.inicio, intervalo.fim),
-    conta || p.categoria ? Promise.resolve([]) : repo.faturasAbertas(ctx.usuario.id, ctx.hoje),
+    conta ? Promise.resolve([]) : repo.resumoPorConta(ctx.usuario.id, intervalo.inicio, intervalo.fim),
+    conta ? Promise.resolve([]) : repo.faturasAbertas(ctx.usuario.id, ctx.hoje),
+    ...reservas.map((c) =>
+      repo.lancamentos(ctx.usuario.id, intervalo.inicio, intervalo.fim, { categoriaId: c.id, contaId: conta?.id, limite: 2 })
+    ),
   ]);
-  const texto = textoResumo(categorias, intervalo.rotulo, p.categoria, {
-    porConta: conta ? [] : porConta,
-    faturas,
-    conta,
-    hoje: ctx.hoje,
-  });
+  const destaques = new Map(reservas.map((c, i) => [c.nome, semCategoria[i].itens]));
+  const texto = textoResumo(categorias, intervalo.rotulo, null, { porConta, faturas, conta, hoje: ctx.hoje, destaques });
   return { texto, status: "processada" };
 }
 
@@ -534,6 +562,27 @@ async function configurarCartao(p: PedidoCartao, ctx: Contexto): Promise<Resulta
   return { texto: textoCartaoConfigurado(cartao, atualizados, ctx.hoje), status: "processada" };
 }
 
+/** "roberto é moradia": guarda a regra e já recategoriza o que bate com ela. */
+async function categorizar(regra: { termo: string; categoria: string }, ctx: Contexto): Promise<Resultado> {
+  const { repo } = ctx.deps;
+  const categoria = ctx.categorias.find((c) => normalizar(c.nome) === normalizar(regra.categoria));
+  if (!categoria) return { texto: `📂 Não tenho a categoria *${regra.categoria}*.`, status: "processada" };
+  const termo = chave(regra.termo).trim();
+  const regraId = await repo.criarRegra(ctx.usuario.id, termo, categoria.id);
+  const passos: PassoDesfazer[] = [{ op: "desativar_regra", id: regraId }];
+  const afetadas = await repo.transacoesComTermo(ctx.usuario.id, termo, categoria.tipo);
+  let total = 0;
+  for (const t of afetadas) {
+    if (t.categoriaId === categoria.id) continue;
+    passos.push({ op: "campos", id: t.id, campos: { categoriaId: t.categoriaId } });
+    await repo.atualizarTransacao(t.id, { categoriaId: categoria.id });
+    total += t.valorCentavos;
+  }
+  const mudadas = passos.length - 1;
+  await anotar(ctx, `a regra "${termo}" → ${categoria.nome}`, passos);
+  return { texto: textoCategorizado(termo, categoria.nome, mudadas, total), status: "processada" };
+}
+
 async function mostrarUltimo(ctx: Contexto): Promise<Resultado> {
   const ts = await ctx.deps.repo.transacoesDaUltimaMensagem(ctx.usuario.id);
   if (ts.length === 0) return { texto: "Você ainda não registrou nada por aqui.", status: "processada" };
@@ -630,6 +679,11 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
       break;
     case "contas":
       resultado = await mostrarContas(ctx, interpretacao.contaConsulta);
+      break;
+    case "categorizar":
+      resultado = interpretacao.regra
+        ? await categorizar(interpretacao.regra, ctx)
+        : { texto: "📂 Mande assim: _roberto é moradia_.", status: "processada" };
       break;
     case "esclarecer":
       resultado = {

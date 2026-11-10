@@ -109,6 +109,16 @@ export function criarRepositorioBanco(db: SupabaseClient): RepositorioBanco {
       return (data ?? []) as Categoria[];
     },
 
+    async listarRegras(usuarioId) {
+      const { data, error } = await db
+        .from("regras_categoria")
+        .select("id, termo, categoria_id")
+        .eq("usuario_id", usuarioId)
+        .eq("ativa", true);
+      if (error) falhar("listarRegras", error);
+      return (data ?? []).map((l: Linha) => ({ id: l.id, termo: l.termo, categoriaId: l.categoria_id }));
+    },
+
     async buscarPorExternos(usuarioId, externos) {
       const saida: TransacaoSalva[] = [];
       for (const lote of lotes(externos)) {

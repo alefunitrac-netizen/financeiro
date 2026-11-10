@@ -1,10 +1,12 @@
 // Implementação do Repositorio sobre o Postgres do Supabase (supabase-js).
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.119.0";
+import { chave, contemTermo } from "./texto.ts";
 import type {
   CamposCorrecao,
   Categoria,
   Conta,
   NovaTransacao,
+  LancamentoResumido,
   PassoDesfazer,
   Repositorio,
   Transacao,
@@ -323,6 +325,71 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
         totalCentavos: Number(l.total_centavos),
         quantidade: Number(l.quantidade),
       }));
+    },
+
+    async lancamentos(usuarioId, inicio, fim, filtro) {
+      let q = db
+        .from("transacoes")
+        .select("descricao, valor_centavos, data_transacao, contas(nome), categorias(nome)", { count: "exact" })
+        .eq("usuario_id", usuarioId)
+        .neq("status", "cancelado")
+        .in("tipo", ["despesa", "receita"])
+        .gte("data_transacao", inicio)
+        .lte("data_transacao", fim)
+        .order("valor_centavos", { ascending: false })
+        .limit(filtro.limite);
+      if (filtro.categoriaId) q = q.eq("categoria_id", filtro.categoriaId);
+      if (filtro.contaId) q = q.eq("conta_id", filtro.contaId);
+      const { data, error, count } = await q;
+      if (error) falhar("lancamentos", error);
+      const itens = (data ?? []).map((l: Linha): LancamentoResumido => ({
+        descricao: l.descricao,
+        valorCentavos: Number(l.valor_centavos),
+        dataTransacao: l.data_transacao,
+        conta: l.contas?.nome ?? null,
+        categoria: l.categorias?.nome ?? null,
+      }));
+      return { itens, total: count ?? itens.length };
+    },
+
+    async listarRegras(usuarioId) {
+      const { data, error } = await db
+        .from("regras_categoria")
+        .select("id, termo, categoria_id")
+        .eq("usuario_id", usuarioId)
+        .eq("ativa", true);
+      if (error) falhar("listarRegras", error);
+      return (data ?? []).map((l: Linha) => ({ id: l.id, termo: l.termo, categoriaId: l.categoria_id }));
+    },
+
+    async criarRegra(usuarioId, termo, categoriaId) {
+      const { data, error } = await db
+        .from("regras_categoria")
+        .insert({ usuario_id: usuarioId, termo, categoria_id: categoriaId })
+        .select("id")
+        .single();
+      if (error) falhar("criarRegra", error);
+      return data.id;
+    },
+
+    async desativarRegra(id) {
+      const { error } = await db.from("regras_categoria").update({ ativa: false }).eq("id", id);
+      if (error) falhar("desativarRegra", error);
+    },
+
+    async transacoesComTermo(usuarioId, termo, tipo) {
+      // O banco filtra por aproximação (sem acento não dá no ilike); a regra exata é aplicada aqui.
+      const palavras = termo.split(/\s+/).filter(Boolean);
+      let q = db
+        .from("transacoes")
+        .select(COLUNAS_TRANSACAO)
+        .eq("usuario_id", usuarioId)
+        .eq("tipo", tipo)
+        .neq("status", "cancelado");
+      for (const p of palavras) q = q.ilike("descricao", `%${p.replace(/[%_]/g, "")}%`);
+      const { data, error } = await q.limit(1000);
+      if (error) falhar("transacoesComTermo", error);
+      return (data ?? []).map(deLinha).filter((t) => contemTermo(chave(t.descricao), termo));
     },
 
     async faturasAbertas(usuarioId, hoje) {

@@ -10,3 +10,12 @@ export function chave(texto: string): string {
   }
   return saida;
 }
+
+const escapar = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** O termo aparece no texto como palavra (ou palavras) inteira(s)? Os dois já em chave(). */
+export function contemTermo(textoChave: string, termoChave: string): boolean {
+  const t = termoChave.trim();
+  if (!t) return false;
+  return new RegExp(`(?<![a-z0-9])${escapar(t).replace(/\s+/g, "\\s+")}(?![a-z0-9])`).test(textoChave);
+}

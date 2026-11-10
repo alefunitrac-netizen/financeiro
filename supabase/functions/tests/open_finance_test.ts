@@ -220,6 +220,10 @@ class RepoBancoMemoria implements RepositorioBanco {
     this.contas.set(d.externalId, atual);
     return Promise.resolve(atual);
   }
+  regras: { id: string; termo: string; categoriaId: string }[] = [];
+  listarRegras() {
+    return Promise.resolve(this.regras);
+  }
   listarCategorias() {
     return Promise.resolve(CATEGORIAS);
   }

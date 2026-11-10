@@ -42,7 +42,7 @@ Deno.test("fatura informada vai para o cartão certo e não soma como despesa", 
   assert.deepEqual(repo.ativas().filter((t) => t.tipo === "pagamento_fatura").map((t) => t.valorCentavos), [160000]);
 
   const resumo = await enviar("resumo da semana");
-  assert.match(resumo, /Nada registrado/); // a fatura não é despesa
+  assert.match(resumo, /Nada registrado ainda/); // a fatura não é despesa
   assert.match(resumo, /Faturas a pagar: R\$ 1\.600,00/);
   assert.match(resumo, /Cartão Nubank: R\$ 1\.600,00 · vence 10\/11/);
 
@@ -90,17 +90,17 @@ Deno.test("resumo separa por conta, por categoria e mostra as faturas", async ()
   await enviar("nubank fecha dia 3 vence dia 10");
 
   const r = await enviar("resumo da semana");
-  assert.match(r, /💸 \*Despesas: R\$ 175,00\*/);
-  assert.match(r, /_Por conta_\n• 💳 Cartão Nubank: R\$ 120,00 \(69%\)\n• 🏦 Itaú: R\$ 35,00 \(20%\)\n• ❔ Sem conta: R\$ 20,00 \(11%\)/);
-  assert.match(r, /_Por categoria_\n• Mercado: R\$ 120,00/);
+  assert.match(r, /💸 Saiu: \*R\$ 175,00\*/);
+  assert.match(r, /\*Para onde foi\*\n• Mercado: R\$ 120,00\n• Alimentação: R\$ 35,00\n• Transporte: R\$ 20,00/);
+  assert.match(r, /\*Por conta\*\n• 💳 Cartão Nubank: saiu R\$ 120,00\n• 🏦 Itaú: saiu R\$ 35,00\n• ❔ Sem conta: saiu R\$ 20,00/);
   assert.match(r, /Faturas a pagar: R\$ 120,00\*\n• 💳 Cartão Nubank: R\$ 120,00 · vence 10\/12 _\(compras até agora\)_/);
 
   const nu = await enviar("quanto gastei no nubank?");
-  assert.match(nu, /Cartão Nubank — novembro\/2026/);
-  assert.match(nu, /Despesas: R\$ 120,00/);
+  assert.match(nu, /Cartão Nubank · novembro\/2026/);
+  assert.match(nu, /Saiu: \*R\$ 120,00\*/);
   assert.ok(!nu.includes("Itaú"));
 
-  assert.match(await enviar("Por banco"), /_Por conta_/);
+  assert.match(await enviar("Por banco"), /\*Por conta\*/);
   const contas = await enviar("contas");
   assert.match(contas, /Suas contas/);
   assert.match(contas, /• 💳 Cartão Nubank · fecha dia 3, vence dia 10/);
@@ -159,4 +159,42 @@ Deno.test("desfazer volta a ÚLTIMA ação, na ordem, e as perguntas sobre o car
   assert.deepEqual(repo.ativas().filter((t) => t.tipo === "pagamento_fatura").map((t) => t.valorCentavos), [160000]);
   await enviar("desfazer");
   assert.deepEqual(repo.ativas().filter((t) => t.tipo === "pagamento_fatura").map((t) => t.valorCentavos), [154700]);
+});
+
+Deno.test("resumo do jeito do Alef: Outros mostra o que tem dentro; 'o que são outros'; 'roberto é moradia'", async () => {
+  const { repo, enviar } = semNubank();
+  await enviar("pix roberto augusto 2110");
+  await enviar("pix larissa 12");
+  await enviar("pix larissa 12");
+  await enviar("almoço 35 em dinheiro");
+  await enviar("recebi 2146,51 de salário no itaú");
+
+  const r = await enviar("/resumo");
+  assert.match(r, /\*Para onde foi\*\n• Outros: R\$ 2\.134,00\n {3}_Pix roberto augusto R\$ 2\.110,00; Pix larissa R\$ 12,00_\n• Alimentação: R\$ 35,00/);
+  assert.match(r, /\*Por conta\*\n• 🏦 Itaú: entrou R\$ 2\.146,51\n• ❔ Sem conta: saiu R\$ 2\.134,00\n• 💵 Dinheiro: saiu R\$ 35,00/);
+  assert.match(r, /o que é outros\?/);
+  assert.doesNotMatch(r, /%/);
+
+  for (const t of ["O que são outros", "Outros", "o que tem em outros?"]) {
+    const o = await enviar(t);
+    assert.match(o, /📂 \*Outros\* · novembro\/2026: \*R\$ 2\.134,00\* \(3 lançamentos\)\n• R\$ 2\.110,00 — Pix roberto augusto/, t);
+    assert.match(o, /roberto é moradia/, t);
+  }
+
+  const c = await enviar("roberto é moradia");
+  assert.match(c, /o que tiver \*roberto\* vai para \*Moradia\*/);
+  assert.match(c, /Mudei 1 lançamento \(R\$ 2\.110,00\)/);
+  assert.match(await enviar("/resumo"), /• Moradia: R\$ 2\.110,00/);
+
+  // Vale para os próximos, e desfazer volta tudo.
+  await enviar("pix roberto 300");
+  assert.equal(repo.ativas().at(-1)!.categoriaId, "k-moradia");
+  await enviar("desfazer"); // o pix de 300
+  assert.match(await enviar("desfazer"), /Desfeito:\* a regra "roberto" → Moradia/);
+  assert.equal(repo.ativas().find((t) => t.valorCentavos === 211000)!.categoriaId, "k-outros");
+  assert.equal(repo.regras[0].ativa, false);
+
+  // "Alterar vencimento Nubank dia 10" ajusta a fatura.
+  await enviar("fatura nubank 1547");
+  assert.match(await enviar("Alterar vencimento Nubank dia 10"), /Fatura atualizada[\s\S]*Vence 10\/11/);
 });

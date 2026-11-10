@@ -9,6 +9,7 @@ import type {
   LinhaFatura,
   LinhaResumo,
   LinhaResumoConta,
+  LancamentoResumido,
   TipoTransacao,
   Transacao,
 } from "./tipos.ts";
@@ -141,10 +142,6 @@ export function textoDesfeito(resumo: string): string {
   return `↩️ *Desfeito:* ${resumo}`;
 }
 
-function porcentagem(parte: number, todo: number): string {
-  return todo > 0 ? ` (${Math.round((parte * 100) / todo)}%)` : "";
-}
-
 const vencimentoTexto = (v: DataISO | null, hoje: DataISO) =>
   !v ? "vencimento a definir" : v < hoje ? `venceu ${dataAmigavel(v, hoje)}` : `vence ${dataAmigavel(v, hoje)}`;
 
@@ -185,80 +182,117 @@ function linhasFaturas(linhas: LinhaFatura[], hoje: DataISO): string[] {
   ];
 }
 
-function linhasPorConta(porConta: LinhaResumoConta[], tipo: "despesa" | "receita", total: number): string[] {
-  const doTipo = porConta.filter((l) => l.tipo === tipo);
-  // Só vale separar se ao menos um lançamento tem conta.
-  if (!doTipo.some((l) => l.conta)) return [];
-  return [
-    "_Por conta_",
-    ...doTipo
-      .sort((a, b) => b.totalCentavos - a.totalCentavos)
-      .map((l) =>
-        `• ${l.conta ? `${icone(l.tipoConta)} ${l.conta}` : "❔ Sem conta"}: ${formatarReais(l.totalCentavos)}${
-          tipo === "despesa" ? porcentagem(l.totalCentavos, total) : ""
-        }`
-      ),
-  ];
+/** Uma linha por conta, com o que saiu e o que entrou. Só aparece com mais de uma conta. */
+function linhasPorConta(porConta: LinhaResumoConta[]): string[] {
+  const contas = new Map<string, { nome: string; tipo: string | null; saiu: number; entrou: number }>();
+  for (const l of porConta) {
+    const k = l.contaId ?? "-";
+    const c = contas.get(k) ?? { nome: l.conta ?? "Sem conta", tipo: l.conta ? l.tipoConta : null, saiu: 0, entrou: 0 };
+    if (l.tipo === "despesa") c.saiu += l.totalCentavos;
+    else c.entrou += l.totalCentavos;
+    contas.set(k, c);
+  }
+  if (contas.size < 2) return [];
+  const linhas = [...contas.values()]
+    .sort((a, b) => b.saiu + b.entrou - (a.saiu + a.entrou))
+    .map((c) => {
+      const partes = [];
+      if (c.saiu) partes.push(`saiu ${formatarReais(c.saiu)}`);
+      if (c.entrou) partes.push(`entrou ${formatarReais(c.entrou)}`);
+      return `• ${c.tipo ? icone(c.tipo) : "❔"} ${c.nome}: ${partes.join(" · ")}`;
+    });
+  return ["", "*Por conta*", ...linhas];
 }
+
+/** \"Pix enviado Roberto Augusto Costa de Souza\" → \"Pix enviado Roberto Augusto Costa…\" */
+const encurtar = (s: string, max = 34) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
 
 export interface ExtrasResumo {
   porConta: LinhaResumoConta[];
   faturas: LinhaFatura[];
-  /** Resumo de uma conta só ("quanto gastei no nubank?"). */
+  /** Resumo de uma conta só (\"quanto gastei no nubank?\"). */
   conta: Conta | null;
   hoje: DataISO;
+  /** Maiores lançamentos de \"Outros\" e \"Outras receitas\", para dizer o que tem lá dentro. */
+  destaques?: Map<string, LancamentoResumido[]>;
 }
+
+const maiuscula = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export function textoResumo(
   linhas: LinhaResumo[],
   rotulo: string,
-  categoriaFiltro: string | null,
+  _categoriaFiltro: string | null,
   extras: ExtrasResumo = { porConta: [], faturas: [], conta: null, hoje: "" },
 ): string {
-  const ondeTexto = extras.conta ? ` no ${extras.conta.nome}` : "";
-  if (categoriaFiltro) {
-    const doFiltro = linhas.filter((l) => normalizar(l.categoria) === normalizar(categoriaFiltro));
-    if (doFiltro.length === 0) return `📊 Nada em *${categoriaFiltro}*${ondeTexto} em ${rotulo}.`;
-    const soma = doFiltro.reduce((a, l) => a + l.totalCentavos, 0);
-    const qtd = doFiltro.reduce((a, l) => a + l.quantidade, 0);
-    return `📊 *${doFiltro[0].categoria}*${ondeTexto} em ${rotulo}: ${formatarReais(soma)} (${qtd} lançamento${qtd > 1 ? "s" : ""})`;
-  }
-
-  const despesas = linhas.filter((l) => l.tipo === "despesa");
-  const receitas = linhas.filter((l) => l.tipo === "receita");
+  const titulo = extras.conta ? `📊 *${extras.conta.nome} · ${rotulo}*` : `📊 *${maiuscula(rotulo)}*`;
+  const despesas = linhas.filter((l) => l.tipo === "despesa").sort((a, b) => b.totalCentavos - a.totalCentavos);
+  const receitas = linhas.filter((l) => l.tipo === "receita").sort((a, b) => b.totalCentavos - a.totalCentavos);
   const faturas = linhasFaturas(extras.faturas, extras.hoje);
   if (despesas.length === 0 && receitas.length === 0) {
-    return [`📊 Nada registrado${ondeTexto} em ${rotulo} ainda.`, ...faturas].join("\n");
+    return [titulo, "Nada registrado ainda.", ...faturas].join("\n");
   }
 
   const totalDespesas = despesas.reduce((a, l) => a + l.totalCentavos, 0);
   const totalReceitas = receitas.reduce((a, l) => a + l.totalCentavos, 0);
-  const partes = [extras.conta ? `📊 *${extras.conta.nome} — ${rotulo}*` : `📊 *Resumo — ${rotulo}*`];
-  if (despesas.length) {
-    const contas = linhasPorConta(extras.porConta, "despesa", totalDespesas);
-    partes.push(
-      "",
-      `💸 *Despesas: ${formatarReais(totalDespesas)}*`,
-      ...contas,
-      ...(contas.length ? ["_Por categoria_"] : []),
-      ...despesas.map((l) => `• ${l.categoria}: ${formatarReais(l.totalCentavos)}${porcentagem(l.totalCentavos, totalDespesas)}`),
-    );
-  }
-  if (receitas.length) {
-    const contas = linhasPorConta(extras.porConta, "receita", totalReceitas);
-    partes.push(
-      "",
-      `💰 *Receitas: ${formatarReais(totalReceitas)}*`,
-      ...contas,
-      ...(contas.length ? ["_Por categoria_"] : []),
-      ...receitas.map((l) => `• ${l.categoria}: ${formatarReais(l.totalCentavos)}`),
-    );
-  }
-  if (despesas.length && receitas.length) {
-    partes.push("", `*Saldo do período:* ${formatarReais(totalReceitas - totalDespesas)}`);
-  }
+  const saldo = totalReceitas - totalDespesas;
+  const partes = [titulo, ""];
+  if (receitas.length) partes.push(`💰 Entrou: *${formatarReais(totalReceitas)}*`);
+  if (despesas.length) partes.push(`💸 Saiu: *${formatarReais(totalDespesas)}*`);
+  if (despesas.length && receitas.length) partes.push(`${saldo >= 0 ? "📈" : "📉"} Saldo: *${formatarReais(saldo)}*`);
+
+  const comDestaque = (l: LinhaResumo) => {
+    const linha = `• ${l.categoria}: ${formatarReais(l.totalCentavos)}`;
+    const itens = extras.destaques?.get(l.categoria) ?? [];
+    if (!itens.length) return [linha];
+    return [linha, `   _${itens.map((i) => `${encurtar(i.descricao)} ${formatarReais(i.valorCentavos)}`).join("; ")}_`];
+  };
+  if (despesas.length) partes.push("", "*Para onde foi*", ...despesas.flatMap(comDestaque));
+  if (receitas.length) partes.push("", "*De onde veio*", ...receitas.flatMap(comDestaque));
+  partes.push(...linhasPorConta(extras.porConta));
   partes.push(...faturas);
+  if (extras.destaques && [...extras.destaques.values()].some((i) => i.length)) {
+    partes.push("", "_Detalhe uma categoria: o que é outros? · Mude a categoria: roberto é moradia_");
+  }
   return partes.join("\n");
+}
+
+/** \"o que é outros?\": os maiores lançamentos da categoria no período. */
+export function textoCategoria(
+  categoria: Categoria,
+  rotulo: string,
+  conta: Conta | null,
+  itens: LancamentoResumido[],
+  quantidade: number,
+  total: number,
+  hoje: DataISO,
+): string {
+  const onde = conta ? ` no ${conta.nome}` : "";
+  if (!itens.length) return `📂 Nada em *${categoria.nome}*${onde} em ${rotulo}.`;
+  const linhas = [
+    `📂 *${categoria.nome}*${onde} · ${rotulo}: *${formatarReais(total)}* (${quantidade} lançamento${quantidade > 1 ? "s" : ""})`,
+    ...itens.map((i) =>
+      `• ${formatarReais(i.valorCentavos)} — ${encurtar(i.descricao, 40)} · ${dataAmigavel(i.dataTransacao, hoje)}${
+        i.conta ? ` · ${i.conta}` : ""
+      }`
+    ),
+  ];
+  if (quantidade > itens.length) linhas.push(`_e mais ${quantidade - itens.length} menores._`);
+  if (["outros", "outras receitas"].includes(normalizar(categoria.nome))) {
+    linhas.push("", "_Para mudar a categoria, diga quem é: roberto é moradia, larissa é lazer._");
+  }
+  return linhas.join("\n");
+}
+
+/** \"roberto é moradia\" aplicado. */
+export function textoCategorizado(termo: string, categoria: string, mudados: number, total: number): string {
+  const linhas = [`📂 Combinado: o que tiver *${termo}* vai para *${categoria}*.`];
+  linhas.push(
+    mudados
+      ? `✅ Mudei ${mudados} lançamento${mudados > 1 ? "s" : ""} (${formatarReais(total)}).`
+      : "Nenhum lançamento de agora tinha esse nome; vale para os próximos.",
+  );
+  return linhas.join("\n") + RODAPE;
 }
 
 /** Resposta ao informar uma fatura. Ela não soma nas despesas: os gastos são as compras dentro dela. */

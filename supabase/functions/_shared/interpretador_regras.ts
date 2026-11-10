@@ -477,9 +477,9 @@ function tirarVencimento(t: Texto, hoje: DataISO): DataISO | null {
 /** "fatura nubank 1547", "fatura do itaú 820 vence dia 15", "paguei a fatura do nubank 1547". */
 function lerFatura(texto: string, ctx: ContextoInterpretacao): Interpretacao | null {
   const t = new Texto(texto);
+  const conta = tirarContaOuBanco(t, ctx.contas);
   const vencimento = tirarVencimento(t, ctx.hoje);
   t.tirar(RE_FECHA);
-  const conta = tirarContaOuBanco(t, ctx.contas);
   tirarData(t, ctx.hoje);
   const centavos = tirarValor(t);
   if (centavos === null && !vencimento) return null;
@@ -508,6 +508,41 @@ function lerCartao(texto: string, ctx: ContextoInterpretacao): Interpretacao | n
   };
 }
 
+// "o que são outros?", "o que tem em alimentação", "detalhar mercado", "lançamentos de outros", "outros"
+const RE_DETALHAR =
+  /^\W*(?:o\s+que\s+(?:e|eh|sao|tem|foi|entrou|saiu|caiu|ta|esta)\s+(?:em\s+|no\s+|na\s+|de\s+|o\s+|a\s+|os\s+)?|quais\s+(?:sao\s+)?(?:os\s+|as\s+)?(?:lancamentos\s+|gastos\s+)?(?:de\s+|do\s+|da\s+|em\s+)?|detalh\w*\s+(?:de\s+|do\s+|da\s+|em\s+)?|list\w*\s+(?:de\s+|do\s+|da\s+|em\s+)?|mostr\w*\s+(?:os\s+|as\s+)?(?:lancamentos\s+|gastos\s+)?(?:de\s+|do\s+|da\s+|em\s+)?|(?:lancamentos|gastos|itens)\s+(?:de|do|da|em)\s+)/;
+
+/** "o que são outros", "Outros", "detalhar mercado em outubro": lista os lançamentos da categoria. */
+function lerDetalhe(texto: string, ctx: ContextoInterpretacao): Interpretacao | null {
+  const k = chave(texto);
+  const prefixo = RE_DETALHAR.exec(k);
+  const resto = prefixo ? texto.slice(prefixo[0].length) : texto;
+  // Sem prefixo, só o nome exato da categoria ("Outros", "mercado?"); "almocei fora" não é pedido de lista.
+  const limpo = chave(resto).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  const categoria = prefixo
+    ? acharCategoria(chave(resto), ["despesa", "receita"], ctx.categorias)
+    : ctx.categorias.find((c) => chave(c.nome) === limpo)?.nome ?? null;
+  if (!categoria) return null;
+  const resumo = pedidoResumo(resto, ctx);
+  return { intencao: "resumo", ...VAZIO, resumo: { ...resumo, categoria } };
+}
+
+// "roberto é moradia", "pix da larissa vai para lazer", "uber = transporte"
+const RE_CATEGORIZAR = /^\s*(?:categoriz\w*\s+)?(.+?)\s+(?:é|eh|=|vai\s+(?:pra|para|em)|entra\s+(?:em|como)|fica\s+(?:em|como))\s+(?:de\s+|da\s+|do\s+|em\s+|como\s+|na\s+|no\s+)?(.+?)\s*[.!]*$/i;
+const PALAVRAS_DO_TERMO_VAZIAS = new Set(
+  "o a os as pix enviado enviada recebido recebida da do de dos das para pra todo toda todos tudo compra compras lancamento lancamentos gasto gastos".split(" "),
+);
+
+function lerCategorizar(texto: string, ctx: ContextoInterpretacao): Interpretacao | null {
+  const m = RE_CATEGORIZAR.exec(texto.toLowerCase());
+  if (!m) return null;
+  const categoria = acharCategoria(chave(m[2]), ["despesa", "receita"], ctx.categorias);
+  if (!categoria) return null;
+  const termo = chave(m[1]).replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((p) => p && !PALAVRAS_DO_TERMO_VAZIAS.has(p)).join(" ");
+  if (termo.length < 3) return null;
+  return { intencao: "categorizar", ...VAZIO, regra: { termo, categoria } };
+}
+
 /** "nubank", "cartão itaú", "débito": a mensagem é só uma conta ou um meio de pagamento. */
 function ehSoContaOuMeio(texto: string, ctx: ContextoInterpretacao): boolean {
   const t = new Texto(texto);
@@ -526,7 +561,8 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
     const cartao = lerCartao(texto, ctx);
     if (cartao) return cartao;
   }
-  if (/\bfatura\b/.test(k)) {
+  // "fatura nubank 1547", e também "alterar vencimento nubank dia 10" (sem a palavra fatura).
+  if (/\bfatura\b/.test(k) || (/\b(vence|vencimento|vencendo)\b/.test(k) && /\d/.test(k) && !RE_FECHA.test(k))) {
     const fatura = lerFatura(texto, ctx);
     if (fatura) return fatura;
   }
@@ -542,6 +578,10 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
       const alvo = /\b(vencimento|fatura|parcela|parcelado|parcelada|correcao|fechamento|dias)\b/.exec(k)?.[1] ?? null;
       return { intencao: "desfazer", ...VAZIO, desfazerAlvo: alvo };
     }
+    const detalhe = lerDetalhe(texto, ctx);
+    if (detalhe) return detalhe;
+    const categorizar = lerCategorizar(texto, ctx);
+    if (categorizar) return categorizar;
     if (RE_ULTIMO.test(k)) return { intencao: "ultimo", ...VAZIO };
     if (RE_RESUMO.test(k)) return { intencao: "resumo", ...VAZIO, resumo: pedidoResumo(texto, ctx) };
     if (RE_AJUDA.test(k)) return { intencao: "ajuda", ...VAZIO };
