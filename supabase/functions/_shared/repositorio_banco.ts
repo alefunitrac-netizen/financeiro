@@ -31,7 +31,7 @@ export function criarRepositorioBanco(db: SupabaseClient): RepositorioBanco {
     async listarConexoes(usuarioId) {
       let q = db
         .from("conexoes_banco")
-        .select("id, usuario_id, item_id, instituicao, ultima_sincronizacao, usuarios(telegram_id)")
+        .select("id, usuario_id, item_id, instituicao, ultima_sincronizacao, usuarios(telegram_id, nome)")
         .eq("ativa", true);
       if (usuarioId) q = q.eq("usuario_id", usuarioId);
       const { data, error } = await q;
@@ -42,6 +42,7 @@ export function criarRepositorioBanco(db: SupabaseClient): RepositorioBanco {
         itemId: l.item_id,
         instituicao: l.instituicao,
         telegramId: l.usuarios?.telegram_id != null ? String(l.usuarios.telegram_id) : null,
+        titular: l.usuarios?.nome ?? null,
         ultimaSincronizacao: l.ultima_sincronizacao,
       }));
     },

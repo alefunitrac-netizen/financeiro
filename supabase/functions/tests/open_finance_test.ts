@@ -145,6 +145,18 @@ Deno.test("dívida: renegociação vira transferência; juros e encargos sobre e
   assert.equal(mapearTransacao(tx({ id: "r2", description: "SAIDA RENEGOCIACAO ITAU", amount: -100.71 }), CONTA_CC)!.tipo, "transferencia");
   assert.equal(mapearTransacao(tx({ id: "r3", description: "ENCARGOS REFINANCIAMENTO", amount: 14.43 }), CONTA_CARTAO)!.tipo, "despesa");
   assert.equal(mapearTransacao(tx({ id: "r4", description: "JUROS DE MORA", amount: 0.96 }), CONTA_CARTAO)!.tipo, "despesa");
+  assert.equal(mapearTransacao(tx({ id: "r5", description: "Entrada CREDITO CONSIGNADO", amount: 150, type: "CREDIT" }), CONTA_CC)!.tipo, "transferencia");
+});
+
+Deno.test("Pix entre contas suas vira transferência; para parente com mesmo sobrenome, não", () => {
+  const titular = "Alef Souza";
+  const tipo = (description: string, type = "DEBIT") =>
+    mapearTransacao(tx({ id: description, description, amount: 10, type }), CONTA_CC, titular)!.tipo;
+  assert.equal(tipo("Pix enviado ALEF CAVACO DE SOUZA"), "transferencia");
+  assert.equal(tipo("Pix recebido ALEF CAVACO DE SOUZA", "CREDIT"), "transferencia");
+  assert.equal(tipo("Pix enviado MARGARETH CAVACO DE SOUZA"), "despesa");
+  assert.equal(tipo("Compra débito Alef Souza Lanches"), "despesa"); // não é transferência
+  assert.equal(mapearTransacao(tx({ id: "s", description: "Pix enviado ALEF SOUZA", amount: 10 }), CONTA_CC)!.tipo, "despesa");
 });
 
 Deno.test("conferência: mesmo valor e tipo, conta igual ou sem conta, data mais próxima", () => {
@@ -194,7 +206,7 @@ class RepoBancoMemoria implements RepositorioBanco {
   transacoes: Linha[] = [];
   sincronizacoes: { conexaoId: string; erro: string | null; consentimentoExpiraEm: string | null }[] = [];
   conexoes: ConexaoBanco[] = [{
-    id: "cx1", usuarioId: "u1", itemId: "item-1", instituicao: null, telegramId: "777", ultimaSincronizacao: null,
+    id: "cx1", usuarioId: "u1", itemId: "item-1", instituicao: null, telegramId: "777", titular: "Ana Lima", ultimaSincronizacao: null,
   }];
   private seq = 0;
 

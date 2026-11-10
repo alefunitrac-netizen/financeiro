@@ -220,7 +220,7 @@ export function dataDoBanco(iso: string): DataISO {
   return Number.isNaN(instante.getTime()) ? iso.slice(0, 10) : hojeNoFuso("America/Sao_Paulo", instante);
 }
 
-/** "transferencia": movimento de dívida (renegociação, empréstimo), que não é ganho nem consumo. */
+/** "transferencia": movimento de dívida (renegociação, empréstimo) ou entre contas suas: nem ganho nem consumo. */
 export type TipoBanco = "despesa" | "receita" | "pagamento_fatura" | "transferencia";
 
 export interface TransacaoBanco {
@@ -245,10 +245,22 @@ const RE_PAGAMENTO_FATURA = /\b(pagamento|pagto|pgto|pag)\b.*\b(fatura|cartao)\b
 const RE_PAGAMENTO_RECEBIDO_CARTAO = /\b(pagamento|pagto|pgto)\b/;
 // Renegociação/empréstimo move dívida de lugar: entra como transferência, fora de despesas e receitas.
 // Juros, encargos e tarifas sobre a dívida continuam sendo despesa.
-const RE_DIVIDA = /\b(renegociacao|refinanciamento|emprestimo|financiamento|credito pessoal|parcelamento de fatura)\b/;
+const RE_DIVIDA = /\b(renegociacao|refinanciamento|emprestimo|financiamento|credito pessoal|consignado|parcelamento de fatura)\b/;
 const RE_CUSTO_DA_DIVIDA = /\b(juros|encargos|iof|multa|tarifa|mora)\b/;
+const RE_ENTRE_CONTAS = /\b(pix|ted|doc|transf|transferencia)\b/;
 
-export function mapearTransacao(t: TransacaoPluggy, conta: ContaSalva): TransacaoBanco | null {
+/**
+ * Dinheiro entre contas suas (Pix para você mesmo em outro banco): não é ganho nem gasto.
+ * Reconhece pelo seu nome na descrição; exige nome e sobrenome para não confundir parentes.
+ */
+export function ehEntreContasSuas(descricao: string, titular: string | null | undefined): boolean {
+  const k = chave(descricao);
+  if (!titular || !RE_ENTRE_CONTAS.test(k)) return false;
+  const nomes = chave(titular).split(/[^a-z0-9]+/).filter((n) => n.length >= 3 && !["dos", "das"].includes(n));
+  return nomes.length >= 2 && nomes.every((n) => new RegExp(`\\b${n}\\b`).test(k));
+}
+
+export function mapearTransacao(t: TransacaoPluggy, conta: ContaSalva, titular?: string | null): TransacaoBanco | null {
   const bruto = typeof t.amountInAccountCurrency === "number" ? t.amountInAccountCurrency : t.amount;
   const valor = Math.abs(emCentavos(bruto));
   if (!valor) return null;
@@ -262,7 +274,7 @@ export function mapearTransacao(t: TransacaoPluggy, conta: ContaSalva): Transaca
   const cartao = conta.tipo === "cartao_credito";
 
   let tipo: TipoBanco;
-  if (RE_DIVIDA.test(k) && !RE_CUSTO_DA_DIVIDA.test(k)) {
+  if ((RE_DIVIDA.test(k) && !RE_CUSTO_DA_DIVIDA.test(k)) || ehEntreContasSuas(descricao, titular)) {
     tipo = "transferencia";
   } else if (cartao) {
     // No cartão: positivo é compra; negativo é pagamento da fatura ou estorno.
@@ -328,6 +340,8 @@ export interface ConexaoBanco {
   itemId: string;
   instituicao: string | null;
   telegramId: string | null;
+  /** Nome do dono, para reconhecer Pix entre contas dele. */
+  titular: string | null;
   ultimaSincronizacao: string | null;
 }
 
@@ -419,7 +433,7 @@ export async function sincronizarConexao(
     }
     const conta = await repo.salvarConta(conexao.usuarioId, dados);
     const doBanco = (await pluggy.transacoes(cp.id, de, ate))
-      .map((t) => mapearTransacao(t, conta))
+      .map((t) => mapearTransacao(t, conta, conexao.titular))
       .filter((t): t is TransacaoBanco => t !== null);
     // Mesmo id duas vezes na mesma leitura: fica o último.
     const unicas = [...new Map(doBanco.map((t) => [t.externalId, t])).values()];
