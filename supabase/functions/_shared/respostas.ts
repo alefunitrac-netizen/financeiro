@@ -204,16 +204,16 @@ function linhasPorConta(porConta: LinhaResumoConta[]): string[] {
   return ["", "*Por conta*", ...linhas];
 }
 
-/** \"Pix enviado Roberto Augusto Costa de Souza\" → \"Pix enviado Roberto Augusto Costa…\" */
+/** "Pix enviado Roberto Augusto Costa de Souza" → "Pix enviado Roberto Augusto Costa…" */
 const encurtar = (s: string, max = 34) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
 
 export interface ExtrasResumo {
   porConta: LinhaResumoConta[];
   faturas: LinhaFatura[];
-  /** Resumo de uma conta só (\"quanto gastei no nubank?\"). */
+  /** Resumo de uma conta só ("quanto gastei no nubank?"). */
   conta: Conta | null;
   hoje: DataISO;
-  /** Maiores lançamentos de \"Outros\" e \"Outras receitas\", para dizer o que tem lá dentro. */
+  /** Maiores lançamentos de "Outros" e "Outras receitas", para dizer o que tem lá dentro. */
   destaques?: Map<string, LancamentoResumido[]>;
 }
 
@@ -257,7 +257,7 @@ export function textoResumo(
   return partes.join("\n");
 }
 
-/** \"o que é outros?\": os maiores lançamentos da categoria no período. */
+/** "o que é outros?": os maiores lançamentos da categoria no período. */
 export function textoCategoria(
   categoria: Categoria,
   rotulo: string,
@@ -284,7 +284,7 @@ export function textoCategoria(
   return linhas.join("\n");
 }
 
-/** \"roberto é moradia\" aplicado. */
+/** "roberto é moradia" aplicado. */
 export function textoCategorizado(termo: string, categoria: string, mudados: number, total: number): string {
   const linhas = [`📂 Combinado: o que tiver *${termo}* vai para *${categoria}*.`];
   linhas.push(
