@@ -317,7 +317,8 @@ function descricaoDe(t: Texto, categoria: string, tipo: TipoLancamento, parcelad
   }
   const marca = MARCAS[chave(d)];
   if (marca) return marca;
-  return d.length <= 2 ? d.toUpperCase() : d[0].toUpperCase() + d.slice(1);
+  // Sigla de 2 letras em maiúsculas (TV, PC); "ar" é palavra.
+  return d.length <= 2 && chave(d) !== "ar" ? d.toUpperCase() : d[0].toUpperCase() + d.slice(1);
 }
 
 // ---------- Intenções ----------
@@ -583,6 +584,38 @@ function lerLembretes(k: string): Interpretacao | null {
 
 const palavrasDe = (k: string) => k.split(/[^a-z0-9]+/).filter(Boolean).length;
 
+// ---------- Simulação, previsão e renda ----------
+
+// "vou comprar um ar de 500 em 3x", "se eu parcelar...", "posso gastar 300?", "quanto compromete", "cabe?"
+const RE_SIMULAR =
+  /\b(?:vou\s+(?:comprar|pagar|gastar|parcelar|fazer|pegar)|se\s+eu\s+(?:comprar|gastar|parcelar|pegar|pagar|fizer)|posso\s+(?:comprar|gastar|parcelar|pagar)|(?:da|daria)\s+(?:pra|para)\s+(?:comprar|parcelar|gastar|pagar)|consigo\s+(?:comprar|pagar|parcelar)|quero\s+comprar|pensando\s+em\s+comprar|simul\w*|comprometer|compromete|comprometimento|cabe|caberia|vale\s+a\s+pena)\b/;
+// "previsão", "quanto vai sobrar?", "como vou fechar o mês?"
+const RE_PREVISAO =
+  /\b(?:previsao|projecao|quanto\s+(?:vai|vou|deve|ira)\s+sobrar|vai\s+sobrar|vou\s+fechar|vai\s+fechar|como\s+(?:vou|vai)\s+fechar)\b/;
+// "minha renda é 4500", "meu salário é 3200", "ganho 5 mil por mês", "recebo 4000 por mês"
+const RE_RENDA =
+  /\b(?:minha\s+renda|renda\s+mensal|renda\s+(?:e|eh|de)|meu\s+salario\s+(?:e|eh|de|=)|(?:ganho|recebo)\b.*\b(?:por|ao|no|todo)\s+mes)\b/;
+// Palavras da pergunta que não descrevem a compra.
+const PALAVRAS_DA_PERGUNTA = new Set(
+  ("vou comprar pagar gastar parcelar fazer pegar se eu posso consigo quero pensando da daria quanto isso isto ira irá vai " +
+    "comprometer compromete comprometimento renda orcamento orçamento cabe caberia sera será simular simulacao simulação " +
+    "vale pena fica ficaria num numa nuns numas minha meu mes mês mensal qual quais como ai aí entao então teria tenho dinheiro sobra sobrar").split(" "),
+);
+
+function lerSimulacao(texto: string, ctx: ContextoInterpretacao): Interpretacao | null {
+  const limpo = texto.split(/\s+/).filter((p) => !PALAVRAS_DA_PERGUNTA.has(chave(p).replace(/[^a-z0-9]/g, ""))).join(" ");
+  const compra = lerLancamento(limpo, ctx);
+  if (!compra) return null;
+  compra.tipo = "despesa";
+  if (compra.descricao === "Gasto") compra.descricao = "Compra";
+  return { intencao: "simular", ...VAZIO, simulacao: { compra, texto } };
+}
+
+/** O valor citado num texto curto ("4500", "5 mil"), em centavos. */
+export function valorNoTexto(texto: string): number | null {
+  return tirarValor(new Texto(texto));
+}
+
 const RE_ALTERAR = /\b(alter\w*|mud\w*|troc\w*|corrig\w*|ajust\w*)\b/;
 
 /** Entende a mensagem por regras. Devolve null quando não tem certeza do que ela pede. */
@@ -601,6 +634,14 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
     const fatura = lerFatura(texto, ctx);
     if (fatura) return fatura;
   }
+  if (RE_RENDA.test(k)) {
+    const centavos = valorNoTexto(texto);
+    if (centavos !== null) return { intencao: "renda", ...VAZIO, renda: centavosEmTexto(centavos) };
+  }
+  if (RE_SIMULAR.test(k)) {
+    const simulacao = lerSimulacao(texto, ctx);
+    if (simulacao) return simulacao;
+  }
   if (RE_ERA.test(k)) {
     const c = lerCorrecao(texto, ctx);
     if (!correcaoVazia(c)) return c;
@@ -616,6 +657,9 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
   if (!temValor) {
     const lembretes = lerLembretes(k);
     if (lembretes) return lembretes;
+    if (RE_PREVISAO.test(k) || (RE_SIMULAR.test(k) && /\b(?:sobra|sobrar|renda|orcamento)\b/.test(k))) {
+      return { intencao: "simular", ...VAZIO, simulacao: { compra: null, texto } };
+    }
     if (RE_DESFAZER.test(k)) {
       const alvo = /\b(vencimento|fatura|parcela|parcelado|parcelada|correcao|fechamento|dias)\b/.exec(k)?.[1] ?? null;
       return { intencao: "desfazer", ...VAZIO, desfazerAlvo: alvo };

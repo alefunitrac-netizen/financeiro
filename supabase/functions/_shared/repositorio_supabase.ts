@@ -456,6 +456,41 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
       if (error) falhar("liberarAviso", error);
     },
 
+    async fluxoMensal(usuarioId, inicio, fim) {
+      const { data, error } = await db.rpc("fluxo_mensal", { p_usuario: usuarioId, p_inicio: inicio, p_fim: fim });
+      if (error) falhar("fluxoMensal", error);
+      return ((data ?? []) as Linha[]).map((l) => ({
+        mes: String(l.mes).slice(0, 10),
+        receitas: Number(l.receitas),
+        gastosAvulsos: Number(l.gastos_avulsos),
+        parcelas: Number(l.parcelas),
+      }));
+    },
+
+    async primeiroLancamento(usuarioId) {
+      const { data, error } = await db
+        .from("transacoes")
+        .select("data_transacao")
+        .eq("usuario_id", usuarioId)
+        .neq("status", "cancelado")
+        .order("data_transacao")
+        .limit(1)
+        .maybeSingle();
+      if (error) falhar("primeiroLancamento", error);
+      return data?.data_transacao ?? null;
+    },
+
+    async rendaInformada(usuarioId) {
+      const { data, error } = await db.from("usuarios").select("renda_mensal_centavos").eq("id", usuarioId).maybeSingle();
+      if (error) falhar("rendaInformada", error);
+      return data?.renda_mensal_centavos == null ? null : Number(data.renda_mensal_centavos);
+    },
+
+    async definirRenda(usuarioId, centavos) {
+      const { error } = await db.from("usuarios").update({ renda_mensal_centavos: centavos }).eq("id", usuarioId);
+      if (error) falhar("definirRenda", error);
+    },
+
     async faturasAbertas(usuarioId, hoje) {
       const { data, error } = await db.rpc("faturas_abertas", { p_usuario: usuarioId, p_hoje: hoje });
       if (error) falhar("faturasAbertas", error);

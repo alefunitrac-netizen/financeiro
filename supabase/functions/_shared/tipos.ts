@@ -114,7 +114,20 @@ export type Pendencia =
   | { tipo: "vencimento"; contaId: string }
   | { tipo: "dias_cartao"; contaId: string }
   | { tipo: "conta_fatura"; valor: string; vencimento: DataISO | null; paga: boolean }
-  | { tipo: "categoria"; termo: string; tipoLancamento: TipoLancamento; descricao: string; valorCentavos: number };
+  | { tipo: "categoria"; termo: string; tipoLancamento: TipoLancamento; descricao: string; valorCentavos: number }
+  /** Simulação esperando a renda ("Qual sua renda?"): ao responder, refaz a simulação. */
+  | { tipo: "renda"; texto: string }
+  /** Depois da simulação: "sim" registra a compra. */
+  | { tipo: "registrar_compra"; lancamento: LancamentoInterpretado };
+
+/** Um mês do fluxo: o que entrou, o gasto do dia a dia (fora parcelas) e as parcelas pagas nele. */
+export interface MesFluxo {
+  /** Primeiro dia do mês (YYYY-MM-01). */
+  mes: DataISO;
+  receitas: number;
+  gastosAvulsos: number;
+  parcelas: number;
+}
 
 export interface Acao {
   id: string;
@@ -219,6 +232,12 @@ export interface Repositorio {
   reservarAviso(usuarioId: string, chave: string): Promise<boolean>;
   /** Desfaz a reserva quando o envio falhou, para tentar na próxima rodada. */
   liberarAviso(usuarioId: string, chave: string): Promise<void>;
+  /** Fluxo por mês entre as datas (inclusive), só os meses que têm algo. */
+  fluxoMensal(usuarioId: string, inicio: DataISO, fim: DataISO): Promise<MesFluxo[]>;
+  /** Data do lançamento mais antigo: até onde o histórico vai. */
+  primeiroLancamento(usuarioId: string): Promise<DataISO | null>;
+  rendaInformada(usuarioId: string): Promise<number | null>;
+  definirRenda(usuarioId: string, centavos: number): Promise<void>;
 }
 
 // ---------- Saída do interpretador (modelo de IA) ----------
@@ -235,6 +254,8 @@ export type Intencao =
   | "contas"
   | "categorizar"
   | "lembretes"
+  | "simular"
+  | "renda"
   | "esclarecer"
   | "fora_do_escopo";
 
@@ -301,6 +322,10 @@ export interface Interpretacao {
   desfazerAlvo?: string | null;
   /** Intenção "categorizar": "roberto é moradia". */
   regra?: { termo: string; categoria: string } | null;
+  /** Intenção "simular": a compra pensada (null = só a previsão dos próximos meses) e o texto original. */
+  simulacao?: { compra: LancamentoInterpretado | null; texto: string } | null;
+  /** Intenção "renda": "minha renda é 4500" (valor com ponto decimal). */
+  renda?: string | null;
   /** Intenção "lembretes": true liga, false desliga, null só mostra como está. */
   lembretes?: boolean | null;
   /** Intenção "contas": mostrar só esta conta ("nubank", "vencimento nubank"). */

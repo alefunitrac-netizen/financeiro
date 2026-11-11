@@ -263,6 +263,34 @@ export class RepoMemoria implements Repositorio {
     this.avisos.delete(chave);
     return Promise.resolve();
   }
+  renda: number | null = null;
+  fluxoMensal(_u: string, inicio: string, fim: string) {
+    const meses = new Map<string, { mes: string; receitas: number; gastosAvulsos: number; parcelas: number }>();
+    for (const t of this.ativas()) {
+      if (t.tipo === "pagamento_fatura") continue;
+      const parcela = (t.parcelaTotal ?? 0) >= 2 || /\(\d+\/\d+\)/.test(t.descricao);
+      const data = parcela ? t.dataPagamento ?? t.dataTransacao : t.dataTransacao;
+      if (data < inicio || data > fim) continue;
+      const mes = `${data.slice(0, 7)}-01`;
+      const m = meses.get(mes) ?? { mes, receitas: 0, gastosAvulsos: 0, parcelas: 0 };
+      if (t.tipo === "receita") m.receitas += t.valorCentavos;
+      else if (parcela) m.parcelas += t.valorCentavos;
+      else m.gastosAvulsos += t.valorCentavos;
+      meses.set(mes, m);
+    }
+    return Promise.resolve([...meses.values()].sort((a, b) => a.mes.localeCompare(b.mes)));
+  }
+  primeiroLancamento() {
+    const datas = this.ativas().map((t) => t.dataTransacao).sort();
+    return Promise.resolve(datas[0] ?? null);
+  }
+  rendaInformada() {
+    return Promise.resolve(this.renda);
+  }
+  definirRenda(_u: string, centavos: number) {
+    this.renda = centavos;
+    return Promise.resolve();
+  }
   faturasAbertas(_u: string, hoje: string): Promise<LinhaFatura[]> {
     const saida: LinhaFatura[] = [];
     for (const t of this.transacoes) {

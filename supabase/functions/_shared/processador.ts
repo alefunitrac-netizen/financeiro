@@ -37,7 +37,22 @@ import {
   textoResumo,
   textoVinculado,
 } from "./respostas.ts";
-import { categoriaNoTexto, contaNoTexto, interpretarPorRegras, vencimentoNoTexto } from "./interpretador_regras.ts";
+import {
+  categoriaNoTexto,
+  contaNoTexto,
+  interpretarPorRegras,
+  valorNoTexto,
+  vencimentoNoTexto,
+} from "./interpretador_regras.ts";
+import {
+  calcularBase,
+  inicioDoMes,
+  projetar,
+  TEXTO_PEDIR_RENDA,
+  textoPrevisao,
+  textoRendaAnotada,
+  textoSimulacao,
+} from "./previsao.ts";
 import { categoriaPorRegra, termoDaDescricao } from "./regras.ts";
 import { normalizarWhatsapp } from "./telefone.ts";
 import { chave } from "./texto.ts";
@@ -708,7 +723,62 @@ async function configurarLembretes(ligar: boolean | null, ctx: Contexto): Promis
   return { texto: textoLembretes(ligado), status: "processada" };
 }
 
-const RE_PULAR = /^\W*(pular|pula|deixa|deixa\s+pra\s+la|nao\s+sei|depois|ignora|ignorar|nada)\W*$/;
+/** Quanto falta, por mês, para saber se uma compra cabe. Não grava nada (só a pergunta "registrar?"). */
+async function simular(s: NonNullable<Interpretacao["simulacao"]>, ctx: Contexto): Promise<Resultado> {
+  const { repo } = ctx.deps;
+  const atual = inicioDoMes(ctx.hoje);
+  const [historico, primeira, renda] = await Promise.all([
+    repo.fluxoMensal(ctx.usuario.id, somarMeses(atual, -3), somarDias(somarMeses(atual, 100), -1)),
+    repo.primeiroLancamento(ctx.usuario.id),
+    repo.rendaInformada(ctx.usuario.id),
+  ]);
+  const base = calcularBase(historico, primeira, ctx.hoje, renda);
+  if (base.renda === null) {
+    await perguntar(ctx, { tipo: "renda", texto: s.texto });
+    return { texto: TEXTO_PEDIR_RENDA, status: "processada" };
+  }
+
+  if (!s.compra) {
+    const meses = [0, 1, 2].map((k) => somarMeses(atual, k));
+    return { texto: textoPrevisao(base, projetar(base, historico, meses, new Map())), status: "processada" };
+  }
+
+  const l = s.compra;
+  const valor = paraCentavos(l.valor);
+  if (valor === null) return { texto: "⚠️ Não entendi o valor da compra. Ex.: _vou comprar uma tv de 2000 em 10x_.", status: "processada" };
+  const n = l.parcelas !== null && l.parcelas >= 2 && l.parcelas <= MAX_PARCELAS ? l.parcelas : 1;
+  let valores: number[];
+  try {
+    valores = n === 1 ? [valor] : l.valor_refere_se_a === "parcela" ? Array(n).fill(valor) : dividirEmParcelas(valor, n);
+  } catch {
+    valores = [valor];
+  }
+  const conta = l.conta ? contaDaConsulta(l.conta, ctx).find((c) => combinaMeio(c, n > 1 ? "credito" : l.meio)) ?? null : null;
+  // Cada parcela cai no mês em que é paga: no cartão, o da fatura; senão, o da compra.
+  const pagamentos = valores.map((_, k) => dataDePagamento(somarMeses(ctx.hoje, k), conta) ?? somarMeses(ctx.hoje, k));
+  const meses = pagamentos.map(inicioDoMes);
+  const novas = new Map<DataISO, number>();
+  valores.forEach((v, k) => novas.set(meses[k], (novas.get(meses[k]) ?? 0) + v));
+  const linhas = projetar(base, historico, [...new Set(meses)], novas);
+  await perguntar(ctx, { tipo: "registrar_compra", lancamento: { ...l, conta: conta?.nome ?? l.conta } });
+  const texto = textoSimulacao(
+    { descricao: l.descricao, valores, conta, meses, primeiroVencimento: conta?.tipo === "cartao_credito" ? pagamentos[0] : null },
+    base,
+    linhas,
+    Math.max(...novas.values()),
+  );
+  return { texto, status: "processada" };
+}
+
+async function anotarRenda(valor: string, ctx: Contexto): Promise<Resultado> {
+  const centavos = paraCentavos(valor);
+  if (centavos === null) return { texto: "⚠️ Não entendi o valor. Ex.: _minha renda é 4500_.", status: "processada" };
+  await ctx.deps.repo.definirRenda(ctx.usuario.id, centavos);
+  return { texto: textoRendaAnotada(centavos), status: "processada" };
+}
+
+const RE_PULAR = /^\W*(pular|pula|deixa|deixa\s+pra\s+la|nao\s+sei|depois|ignora|ignorar|nada|nao|n|agora\s+nao|nao\s+obrigad[oa])\W*$/;
+const RE_SIM = /^\W*(sim|s|isso|pode|pode\s+registrar|registra|registrar|comprei|confirmo|ok|beleza|bora)\W*$/;
 
 /**
  * A mensagem é a resposta curta da pergunta em aberto? Se for, resolve e devolve o resultado.
@@ -717,7 +787,12 @@ const RE_PULAR = /^\W*(pular|pula|deixa|deixa\s+pra\s+la|nao\s+sei|depois|ignora
 async function responderPendencia(p: Pendencia, texto: string, ctx: Contexto): Promise<Resultado | null> {
   const k = normalizar(texto);
   if (RE_PULAR.test(k)) {
-    return { texto: p.tipo === "categoria" ? "👍 Ok, fica em Outros." : "👍 Ok, deixei pra lá.", status: "processada" };
+    const texto = p.tipo === "categoria"
+      ? "👍 Ok, fica em Outros."
+      : p.tipo === "registrar_compra"
+      ? "👍 Ok, não registrei. Quando comprar, é só me mandar."
+      : "👍 Ok, deixei pra lá.";
+    return { texto, status: "processada" };
   }
   switch (p.tipo) {
     case "valor": {
@@ -757,6 +832,22 @@ async function responderPendencia(p: Pendencia, texto: string, ctx: Contexto): P
       const conta = contaNoTexto(texto, ctx.contas);
       if (!conta) return null;
       return await registrarFatura({ conta, valor: p.valor, vencimento: p.vencimento, paga: p.paga }, ctx);
+    }
+    case "renda": {
+      // "Qual sua renda?" → "4500": guarda e refaz a simulação que estava esperando.
+      if (!/\d/.test(texto) || palavras(texto) > 6) return null;
+      const centavos = valorNoTexto(texto);
+      if (centavos === null) return null;
+      await ctx.deps.repo.definirRenda(ctx.usuario.id, centavos);
+      const i = interpretarPorRegras({ texto: p.texto, hoje: ctx.hoje, diaDaSemana: diaDaSemana(ctx.hoje), contas: ctx.contas, categorias: ctx.categorias });
+      const anotada = textoRendaAnotada(centavos);
+      if (i?.intencao !== "simular" || !i.simulacao) return { texto: anotada, status: "processada" };
+      const r = await simular(i.simulacao, ctx);
+      return { texto: `${anotada}\n\n${r.texto}`, status: "processada" };
+    }
+    case "registrar_compra": {
+      if (!RE_SIM.test(k)) return null;
+      return await registrar([{ ...p.lancamento, data: ctx.hoje }], ctx);
     }
     case "categoria": {
       if (palavras(texto) > 4 || /\d/.test(texto)) return null;
@@ -848,6 +939,16 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
       break;
     case "contas":
       resultado = await mostrarContas(ctx, interpretacao.contaConsulta);
+      break;
+    case "simular":
+      resultado = interpretacao.simulacao
+        ? await simular(interpretacao.simulacao, ctx)
+        : { texto: "🧮 Mande assim: _vou comprar um ar de 500 em 3x, quanto compromete?_", status: "processada" };
+      break;
+    case "renda":
+      resultado = interpretacao.renda
+        ? await anotarRenda(interpretacao.renda, ctx)
+        : { texto: "💰 Mande assim: _minha renda é 4500_.", status: "processada" };
       break;
     case "lembretes":
       resultado = await configurarLembretes(interpretacao.lembretes ?? null, ctx);

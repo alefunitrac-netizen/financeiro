@@ -393,6 +393,11 @@ export function textoAjuda(nome: string): string {
 • _nubank_ mostra o cartão; _contas_ mostra todas
 _A fatura fica em "a pagar" e não soma nas despesas: as despesas são as compras dela._
 
+*Simulações*
+• _vou comprar um ar de 500 em 3x, quanto compromete?_
+• _previsão_ mostra quanto deve sobrar nos próximos meses
+• _minha renda é 4500_ (sem isso, uso a média do que entrou)
+
 *Lembretes*: aviso a fatura antes de vencer e mando o resumo da semana na segunda. _parar lembretes_ desliga.
 
 *desfazer* volta a última coisa que fiz (pode repetir).
