@@ -6,9 +6,10 @@ import { dataAmigavel, hojeNoFuso, somarDias, vencimentoFatura } from "./datas.t
 import { formatarReais } from "./dinheiro.ts";
 import { bancoDoTexto } from "./bancos.ts";
 import { categoriaPorTexto } from "./interpretador_regras.ts";
-import { categoriaPorRegra } from "./regras.ts";
+import { categoriaPorRegra, termoDaDescricao } from "./regras.ts";
+import { textoPerguntaCategoria } from "./respostas.ts";
 import { chave } from "./texto.ts";
-import type { Categoria, DataISO, RegraCategoria, TipoConta } from "./tipos.ts";
+import type { Categoria, DataISO, Pendencia, RegraCategoria, TipoConta } from "./tipos.ts";
 
 const API = "https://api.pluggy.ai";
 
@@ -365,6 +366,8 @@ export interface ResultadoSincronizacao {
   confirmadas: number;
   canceladas: number;
   avisos: string[];
+  /** O maior lançamento novo que caiu em "Outros": o bot pergunta o que é. */
+  pergunta: (Extract<Pendencia, { tipo: "categoria" }> & { exemplos: string[] }) | null;
 }
 
 export interface DependenciasSincronizacao {
@@ -405,7 +408,14 @@ export async function sincronizarConexao(
   const regras = await repo.listarRegras(conexao.usuarioId);
   const porNome = new Map(categorias.map((c) => [c.nome, c]));
   const informados = await repo.informadosParaConciliar(conexao.usuarioId, somarDias(de, -5), somarDias(ate, 5));
-  const resultado: ResultadoSincronizacao = { instituicao: "", novas: [], confirmadas: 0, canceladas: 0, avisos };
+  const resultado: ResultadoSincronizacao = {
+    instituicao: "",
+    novas: [],
+    confirmadas: 0,
+    canceladas: 0,
+    avisos,
+    pergunta: null,
+  };
   const bancos = new Set<string>();
 
   for (const cp of await pluggy.contas(conexao.itemId)) {
@@ -454,6 +464,21 @@ export async function sincronizarConexao(
           (b.tipo === "receita" ? "Outras receitas" : "Outros")
         : null;
       const categoria = nomeCategoria ? porNome.get(nomeCategoria) ?? null : null;
+      const termo = termoDaDescricao(b.descricao);
+      if (
+        termo && (nomeCategoria === "Outros" || nomeCategoria === "Outras receitas") &&
+        (b.tipo === "despesa" || b.tipo === "receita") &&
+        (!resultado.pergunta || b.valorCentavos > resultado.pergunta.valorCentavos)
+      ) {
+        resultado.pergunta = {
+          tipo: "categoria",
+          termo,
+          tipoLancamento: b.tipo,
+          descricao: b.descricao,
+          valorCentavos: b.valorCentavos,
+          exemplos: categorias.filter((c) => c.tipo === b.tipo && c.nome !== nomeCategoria).slice(0, 4).map((c) => c.nome),
+        };
+      }
       novas.push({ ...b, categoriaId: categoria?.id ?? null });
       resultado.novas.push({ ...b, categoriaId: categoria?.id ?? null, conta: conta.nome, categoria: categoria?.nome ?? null });
     }
@@ -520,6 +545,9 @@ export function textoSincronizacao(r: ResultadoSincronizacao, hoje: DataISO, sem
   if (r.canceladas) linhas.push(`↩️ ${r.canceladas} lançamento${r.canceladas > 1 ? "s sumiram" : " sumiu"} do banco e foi desfeito.`);
   if (!gastos.length && !r.confirmadas && !r.canceladas) linhas.push("Nada novo desde a última vez.");
   linhas.push(...r.avisos);
+  if (r.pergunta) {
+    linhas.push("", textoPerguntaCategoria(r.pergunta.descricao, r.pergunta.valorCentavos, r.pergunta.exemplos));
+  }
   return linhas.join("\n");
 }
 
@@ -533,10 +561,20 @@ export interface Sincronizador {
 export function criarSincronizador(deps: DependenciasSincronizacao & {
   avisar: (telegramId: string, texto: string) => Promise<void>;
   log: (evento: string, dados?: Record<string, unknown>) => void;
+  /** Guarda a pergunta feita no aviso, para a resposta curta ("moradia") ser entendida. */
+  guardarPergunta?: (usuarioId: string, p: Pendencia) => Promise<void>;
   /** Rodadas automáticas mais próximas que isso são puladas (protege a URL pública). */
   intervaloMinimoMin?: number;
 }): Sincronizador {
   const intervalo = (deps.intervaloMinimoMin ?? 10) * 60_000;
+
+  async function guardar(usuarioId: string, r: ResultadoSincronizacao) {
+    if (!r.pergunta || !deps.guardarPergunta) return;
+    const { exemplos: _exemplos, ...pendencia } = r.pergunta;
+    await deps.guardarPergunta(usuarioId, pendencia).catch((e) =>
+      deps.log("erro_pendencia", { erro: e instanceof Error ? e.message : String(e) })
+    );
+  }
 
   async function uma(conexao: ConexaoBanco): Promise<ResultadoSincronizacao | string> {
     try {
@@ -569,7 +607,10 @@ export function criarSincronizador(deps: DependenciasSincronizacao & {
         total.novas += r.novas.length;
         total.confirmadas += r.confirmadas;
         const texto = textoSincronizacao(r, hoje);
-        if (texto && c.telegramId) await deps.avisar(c.telegramId, texto).catch(() => {});
+        if (texto && c.telegramId) {
+          await deps.avisar(c.telegramId, texto).catch(() => {});
+          await guardar(c.usuarioId, r);
+        }
       }
       return total;
     },
@@ -583,6 +624,7 @@ export function criarSincronizador(deps: DependenciasSincronizacao & {
       const partes: string[] = [];
       for (const c of conexoes) {
         const r = await uma(c);
+        if (typeof r !== "string") await guardar(usuarioId, r);
         partes.push(typeof r === "string"
           ? `⚠️ Não consegui ler o ${c.instituicao ?? "banco"} agora. Tento de novo na próxima rodada.`
           : textoSincronizacao(r, hoje, true)!);

@@ -16,6 +16,7 @@ import type {
   LancamentoResumido,
   NovaConta,
   PassoDesfazer,
+  Pendencia,
   RegraCategoria,
   NovaTransacao,
   Repositorio,
@@ -218,6 +219,18 @@ export class RepoMemoria implements Repositorio {
   }
   desativarRegra(id: string) {
     this.regras.find((r) => r.id === id)!.ativa = false;
+    return Promise.resolve();
+  }
+  pendencia: Pendencia | null = null;
+  lerPendencia() {
+    return Promise.resolve(this.pendencia ? structuredClone(this.pendencia) : null);
+  }
+  salvarPendencia(_u: string, p: Pendencia) {
+    this.pendencia = structuredClone(p);
+    return Promise.resolve();
+  }
+  limparPendencia() {
+    this.pendencia = null;
     return Promise.resolve();
   }
   transacoesComTermo(_u: string, termo: string, tipo: string) {

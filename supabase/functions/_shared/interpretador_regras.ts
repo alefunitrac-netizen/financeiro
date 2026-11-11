@@ -550,6 +550,26 @@ function ehSoContaOuMeio(texto: string, ctx: ContextoInterpretacao): boolean {
   return achou && !/[\p{L}\p{N}]/u.test(t.livre.replace(/\b(foi|e|o|a)\b/g, ""));
 }
 
+// ---------- Respostas curtas (a uma pergunta que o bot fez) ----------
+
+/** Categoria citada num texto curto ("moradia", "é lazer"). */
+export function categoriaNoTexto(texto: string, tipos: TipoLancamento[], categorias: Categoria[]): string | null {
+  return acharCategoria(chave(texto), tipos, categorias);
+}
+
+/** Conta ou banco citado num texto curto ("nubank", "no itaú"). */
+export function contaNoTexto(texto: string, contas: Conta[]): string | null {
+  return tirarContaOuBanco(new Texto(texto), contas);
+}
+
+/** "dia 10", "10", "10/12": a data de vencimento (sempre para frente). */
+export function vencimentoNoTexto(texto: string, hoje: DataISO): DataISO | null {
+  const limpo = chave(texto).replace(/^\W*(?:(?:no|para\s+o|pro|o)\s+)?(?:vence\w*|vencimento)?\s*(?:(?:no|em)\s+)?(?:dia\s+)?/, "");
+  return tirarVencimento(new Texto(`vence dia ${limpo}`), hoje);
+}
+
+const RE_ALTERAR = /\b(alter\w*|mud\w*|troc\w*|corrig\w*|ajust\w*)\b/;
+
 /** Entende a mensagem por regras. Devolve null quando não tem certeza do que ela pede. */
 export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao | null {
   const texto = ctx.texto.trim();
@@ -569,6 +589,11 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
   if (RE_ERA.test(k)) {
     const c = lerCorrecao(texto, ctx);
     if (!correcaoVazia(c)) return c;
+  }
+  // "alterar vencimento nubank": falta o dia; o bot pergunta.
+  if (RE_ALTERAR.test(k) && /\bvenc\w*/.test(k) && !/\d/.test(k)) {
+    const fatura: PedidoFatura = { conta: contaNoTexto(texto, ctx.contas), valor: null, vencimento: null, paga: false };
+    return { intencao: "fatura", ...VAZIO, fatura };
   }
 
   const lancamentos = dividir(texto, ctx).map((s) => lerLancamento(s, ctx));

@@ -41,6 +41,8 @@ const sincronizador = clientId && clientSecret
     agora: () => new Date(),
     avisar: (telegramId, texto) => enviarMensagemTelegram({ token, chatId: Number(telegramId), texto }),
     log,
+    // A pergunta do aviso ("é de qual categoria?") fica valendo por 24h.
+    guardarPergunta: (usuarioId, p) => deps.repo.salvarPendencia(usuarioId, p, 24 * 60),
   })
   : null;
 if (sincronizador) deps.sincronizarBanco = (usuarioId) => sincronizador.sincronizarUsuario(usuarioId);

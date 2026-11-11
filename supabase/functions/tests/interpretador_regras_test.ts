@@ -309,5 +309,5 @@ Deno.test("de ponta a ponta sem IA: a mensagem do Telegram vira lançamento", as
   assert.equal(repo.transacoes[0].contaId, "c-din");
   assert.equal(repo.transacoes[0].categoriaId, "k-alim");
   assert.match(enviadas[1].texto, /R\$ 35,00 — Almoço/);
-  assert.equal(enviadas[2].texto, TEXTO_NAO_ENTENDI);
+  assert.match(enviadas[2].texto, /Quanto foi \*almocei fora\*\?/); // parece gasto: pergunta o valor
 });

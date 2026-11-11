@@ -266,6 +266,7 @@ export function textoCategoria(
   quantidade: number,
   total: number,
   hoje: DataISO,
+  pergunta: string | null = null,
 ): string {
   const onde = conta ? ` no ${conta.nome}` : "";
   if (!itens.length) return `📂 Nada em *${categoria.nome}*${onde} em ${rotulo}.`;
@@ -278,10 +279,17 @@ export function textoCategoria(
     ),
   ];
   if (quantidade > itens.length) linhas.push(`_e mais ${quantidade - itens.length} menores._`);
-  if (["outros", "outras receitas"].includes(normalizar(categoria.nome))) {
+  if (pergunta) linhas.push("", pergunta);
+  else if (["outros", "outras receitas"].includes(normalizar(categoria.nome))) {
     linhas.push("", "_Para mudar a categoria, diga quem é: roberto é moradia, larissa é lazer._");
   }
   return linhas.join("\n");
+}
+
+/** Pergunta a categoria de um lançamento que caiu em "Outros". A resposta pode ser só a categoria. */
+export function textoPerguntaCategoria(descricao: string, valorCentavos: number, exemplos: string[]): string {
+  return `❓ *${encurtar(descricao, 40)}* (${formatarReais(valorCentavos)}) é de qual categoria?\n` +
+    `_Responda só o nome — ${exemplos.map((e) => e.toLowerCase()).join(", ")}… — ou *pular*._`;
 }
 
 /** "roberto é moradia" aplicado. */

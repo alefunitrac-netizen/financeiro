@@ -17,3 +17,17 @@ export function categoriaPorRegra(
   }
   return null;
 }
+
+// O que vem antes do nome de quem recebeu/pagou na descrição do banco.
+const PREFIXOS =
+  /^(?:(?:pix|ted|doc|transf\w*|transferencia|pagamento|pagto|pgto|compra|debito|credito|entrada|saida|enviad[oa]|recebid[oa]|de|da|do|para|pra|qr|code|no|na|em|ec)\s+)+/;
+
+/**
+ * Termo que identifica o lançamento numa regra: "Pix enviado Roberto Augusto Costa" → "roberto augusto costa",
+ * "Compra débito Ty Grill" → "ty grill". Null se não sobrar nada útil.
+ */
+export function termoDaDescricao(descricao: string): string | null {
+  const k = chave(descricao).replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim().replace(PREFIXOS, "");
+  const termo = k.split(" ").filter(Boolean).slice(0, 5).join(" ");
+  return termo.length >= 3 ? termo : null;
+}

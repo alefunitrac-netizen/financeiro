@@ -347,6 +347,13 @@ Deno.test("sincronização: confirma o que você informou, grava o resto e categ
   assert.match(texto, /1 lançamento que você informou foi confirmado/);
   assert.match(texto, /🆕 2 novos vindos do banco/); // pagamento de fatura não conta como gasto
   assert.match(texto, /R\$ 23,50 — UBER \*TRIP · Transporte · ontem/);
+  // O que caiu em "Outros"/"Outras receitas" vem com a pergunta; a resposta curta vira regra.
+  assert.deepEqual(r.pergunta && { termo: r.pergunta.termo, tipo: r.pergunta.tipoLancamento, valor: r.pergunta.valorCentavos }, {
+    termo: "fulano",
+    tipo: "receita",
+    valor: 20000,
+  });
+  assert.match(texto, /❓ \*PIX RECEBIDO FULANO\* \(R\$ 200,00\) é de qual categoria\?/);
 
   // Rodar de novo não duplica nada.
   const total = repo.transacoes.length;
@@ -412,16 +419,26 @@ Deno.test("sincronizador: rodada automática avisa no Telegram, pula quem acabou
   const repo = new RepoBancoMemoria();
   const avisos: [string, string][] = [];
   const logs: string[] = [];
+  const perguntas: [string, unknown][] = [];
   const s = criarSincronizador({
     repo,
     pluggy: pluggyFalsa({ "acc-cc": [tx({ id: "p9", description: "MERCADO", amount: -80 })] }),
     agora: AGORA,
     avisar: (id, texto) => (avisos.push([id, texto]), Promise.resolve()),
     log: (e) => logs.push(e),
+    guardarPergunta: (u, p) => (perguntas.push([u, p]), Promise.resolve()),
   });
   assert.deepEqual(await s.sincronizarTodos(), { conexoes: 1, novas: 1, confirmadas: 0, erros: 0 });
   assert.equal(avisos[0][0], "777");
   assert.match(avisos[0][1], /MERCADO/);
+  assert.match(avisos[0][1], /é de qual categoria\?/);
+  assert.deepEqual(perguntas, [["u1", {
+    tipo: "categoria",
+    termo: "mercado",
+    tipoLancamento: "despesa",
+    descricao: "MERCADO",
+    valorCentavos: 8000,
+  }]]);
   // Logo em seguida: pulado (protege a URL pública e o limite da API).
   repo.conexoes[0].ultimaSincronizacao = AGORA().toISOString();
   assert.equal((await s.sincronizarTodos()).conexoes, 0);

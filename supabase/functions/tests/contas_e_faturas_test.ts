@@ -117,7 +117,7 @@ Deno.test("desfazer volta a ÚLTIMA ação, na ordem, e as perguntas sobre o car
   const nu = await enviar("Nubank");
   assert.match(nu, /💳 Cartão Nubank/);
   assert.match(nu, /Faturas a pagar: R\$ 1\.547,00/);
-  assert.match(nu, /nubank fecha dia 3 vence dia 10/); // pede os dias do cartão
+  assert.match(nu, /Em que dia o cartão fecha e em que dia vence\?/); // pede os dias do cartão
   assert.ok(!nu.includes("Corrigido"));
 
   const venc = await enviar("Fatura Nubank vence dia 10");
@@ -178,7 +178,7 @@ Deno.test("resumo do jeito do Alef: Outros mostra o que tem dentro; 'o que são 
   for (const t of ["O que são outros", "Outros", "o que tem em outros?"]) {
     const o = await enviar(t);
     assert.match(o, /📂 \*Outros\* · novembro\/2026: \*R\$ 2\.134,00\* \(3 lançamentos\)\n• R\$ 2\.110,00 — Pix roberto augusto/, t);
-    assert.match(o, /roberto é moradia/, t);
+    assert.match(o, /❓ \*Pix roberto augusto\* \(R\$ 2\.110,00\) é de qual categoria\?/, t);
   }
 
   const c = await enviar("roberto é moradia");
@@ -197,4 +197,43 @@ Deno.test("resumo do jeito do Alef: Outros mostra o que tem dentro; 'o que são 
   // "Alterar vencimento Nubank dia 10" ajusta a fatura.
   await enviar("fatura nubank 1547");
   assert.match(await enviar("Alterar vencimento Nubank dia 10"), /Fatura atualizada[\s\S]*Vence 10\/11/);
+});
+
+Deno.test("o bot lembra da pergunta que fez: respostas curtas", async () => {
+  const { repo, enviar } = semNubank();
+
+  // Gasto sem valor → "Quanto foi?" → "35 no itaú"
+  assert.match(await enviar("almocei fora"), /Quanto foi \*almocei fora\*\?/);
+  assert.match(await enviar("35 no itaú"), /Registrado:\* R\$ 35,00 — Almocei fora[\s\S]*Alimentação · 🏦 Itaú/);
+
+  // Cartão novo sem dias → "Em que dia fecha e vence?" → "3 e 10"
+  assert.match(await enviar("tênis 300 em 3x no nubank"), /Em que dia o cartão fecha/);
+  assert.match(await enviar("3 e 10"), /Cartão Nubank\*: fecha dia 3, vence dia 10/);
+  assert.equal(repo.contas.find((c) => c.nome === "Cartão Nubank")!.diaVencimento, 10);
+
+  // "Alterar vencimento Nubank" → "Qual o novo vencimento?" → "Dia 10" (exatamente o que deu errado antes)
+  await enviar("fatura nubank 1547");
+  assert.match(await enviar("Alterar vencimento Nubank"), /Qual o novo vencimento da fatura do \*Cartão Nubank\*\?/);
+  assert.match(await enviar("Dia 10"), /Fatura atualizada[\s\S]*Vence 10\/11/);
+
+  // Fatura sem cartão, com dois cartões → "De qual cartão?" → "nubank"
+  repo.contas.push({ id: "c-cx", nome: "Cartão C6 Bank", tipo: "cartao_credito", apelidos: ["c6"], instituicao: "C6 Bank", diaFechamento: 1, diaVencimento: 8 });
+  assert.match(await enviar("fatura 800"), /De qual cartão é essa fatura\?/);
+  assert.match(await enviar("nubank"), /Fatura registrada:\* R\$ 800,00 — 💳 Cartão Nubank/);
+
+  // Categoria: "o que são outros" pergunta o maior; resposta inválida mostra opções e continua esperando.
+  await enviar("pix roberto augusto 2110");
+  await enviar("o que são outros");
+  assert.match(await enviar("família"), /Não tenho a categoria \*família\*/);
+  assert.match(await enviar("moradia"), /o que tiver \*roberto augusto\* vai para \*Moradia\*[\s\S]*Mudei 1 lançamento/);
+
+  // Mudou de assunto: a pergunta some e a mensagem segue normal.
+  await enviar("almocei fora");
+  assert.match(await enviar("uber 20"), /Registrado:\* R\$ 20,00 — Uber/);
+  assert.equal(repo.pendencia, null);
+
+  // "pular"
+  await enviar("pix larissa 12");
+  await enviar("outros");
+  assert.match(await enviar("pular"), /fica em Outros/);
 });

@@ -20,6 +20,7 @@ import {
   TEXTO_BOT_PRIVADO,
   TEXTO_ERRO,
   TEXTO_FORA_DO_ESCOPO,
+  TEXTO_NAO_ENTENDI,
   TEXTO_SO_TEXTO,
   textoAjuda,
   textoCartaoConfigurado,
@@ -30,10 +31,12 @@ import {
   textoFatura,
   textoRegistro,
   textoCategoria,
+  textoPerguntaCategoria,
   textoResumo,
   textoVinculado,
 } from "./respostas.ts";
-import { categoriaPorRegra } from "./regras.ts";
+import { categoriaNoTexto, contaNoTexto, interpretarPorRegras, vencimentoNoTexto } from "./interpretador_regras.ts";
+import { categoriaPorRegra, termoDaDescricao } from "./regras.ts";
 import { normalizarWhatsapp } from "./telefone.ts";
 import { chave } from "./texto.ts";
 import type {
@@ -51,6 +54,7 @@ import type {
   NovaConta,
   NovaTransacao,
   PassoDesfazer,
+  Pendencia,
   PedidoCartao,
   PedidoFatura,
   Repositorio,
@@ -154,10 +158,20 @@ async function resolverConta(
   return { conta: criada, criada };
 }
 
-const PEDIR_DIAS = (c: Conta) => {
-  const k = bancoDa(c) ? chave(bancoDa(c)!).trim() : "cartao";
-  return `_Me diga os dias do cartão: ${k} fecha dia 3 vence dia 10._`;
-};
+const PEDIR_DIAS = (_c: Conta) => `❓ Em que dia o cartão fecha e em que dia vence? _Responda assim: 3 e 10._`;
+
+/** Minutos que o bot espera a resposta de uma pergunta. Categoria vinda do banco espera mais. */
+const ESPERA_MIN = 15;
+const ESPERA_CATEGORIA_MIN = 24 * 60;
+
+async function perguntar(ctx: Contexto, p: Pendencia, minutos = ESPERA_MIN) {
+  await ctx.deps.repo.salvarPendencia(ctx.usuario.id, p, minutos);
+}
+
+const ehReserva = (c: Categoria | null | undefined) => !!c && ["outros", "outras receitas"].includes(normalizar(c.nome));
+const exemplosCategoria = (ctx: Contexto, tipo: TipoLancamento) =>
+  ctx.categorias.filter((c) => c.tipo === tipo && !ehReserva(c)).slice(0, 4).map((c) => c.nome);
+const palavras = (t: string) => normalizar(t).split(" ").filter(Boolean).length;
 
 function avisoContaCriada(c: Conta, curto = false): string {
   if (curto) return `${c.tipo === "cartao_credito" ? "💳" : "🏦"} Criei ${c.tipo === "cartao_credito" ? "o" : "a conta"} *${c.nome}*.`;
@@ -236,6 +250,7 @@ async function registrar(lancamentos: LancamentoInterpretado[], ctx: Contexto): 
     else if (conta?.tipo === "cartao_credito" && !conta.diaFechamento && !avisos.some((a) => a.includes(conta.nome))) {
       avisos.push(`ℹ️ ${conta.nome} sem fechamento e vencimento. ${PEDIR_DIAS(conta)}`);
     }
+    if (conta?.tipo === "cartao_credito" && !conta.diaFechamento) await perguntar(ctx, { tipo: "dias_cartao", contaId: conta.id });
     let categoria = encontrarCategoria(l.categoria, l.tipo, categorias);
     // Sem categoria clara, vale o que você ensinou ("roberto é moradia").
     if (!categoria || ["outros", "outras receitas"].includes(normalizar(categoria.nome))) {
@@ -445,8 +460,22 @@ async function resumir(pedido: Interpretacao["resumo"], ctx: Contexto): Promise<
       repo.resumoPorCategoria(ctx.usuario.id, intervalo.inicio, intervalo.fim, conta?.id),
     ]);
     const soma = somas.find((l) => l.tipo === categoria.tipo && l.categoria === categoria.nome)?.totalCentavos ?? 0;
+    // Em "Outros", já pergunta o que é o maior: a resposta ("moradia") vira regra.
+    let pergunta: string | null = null;
+    const maior = ehReserva(categoria) ? lista.itens[0] : undefined;
+    const termo = maior ? termoDaDescricao(maior.descricao) : null;
+    if (maior && termo) {
+      await perguntar(ctx, {
+        tipo: "categoria",
+        termo,
+        tipoLancamento: categoria.tipo,
+        descricao: maior.descricao,
+        valorCentavos: maior.valorCentavos,
+      }, ESPERA_CATEGORIA_MIN);
+      pergunta = textoPerguntaCategoria(maior.descricao, maior.valorCentavos, exemplosCategoria(ctx, categoria.tipo));
+    }
     return {
-      texto: textoCategoria(categoria, intervalo.rotulo, conta, lista.itens, lista.total, soma, ctx.hoje),
+      texto: textoCategoria(categoria, intervalo.rotulo, conta, lista.itens, lista.total, soma, ctx.hoje, pergunta),
       status: "processada",
     };
   }
@@ -471,10 +500,26 @@ async function registrarFatura(f: PedidoFatura, ctx: Contexto): Promise<Resultad
   const r = f.conta ? await resolverConta(f.conta, "credito", ctx) : { conta: cartoes.length === 1 ? cartoes[0] : null, criada: null };
   const cartao = r.conta;
   if (!cartao || cartao.tipo !== "cartao_credito") {
-    return { texto: "🧾 De qual cartão é essa fatura? Ex.: _fatura nubank 1547 vence dia 15_.", status: "processada" };
+    const nomes = cartoes.map((c) => chave(bancoDa(c) ?? c.nome).trim());
+    if (f.valor !== null) {
+      await perguntar(ctx, { tipo: "conta_fatura", valor: f.valor, vencimento: f.vencimento, paga: f.paga });
+    }
+    return {
+      texto: `🧾 De qual cartão é essa fatura?${nomes.length ? ` _Responda: ${nomes.join(" ou ")}._` : ""}`,
+      status: "processada",
+    };
   }
   const abertas = await repo.faturasInformadas(ctx.usuario.id, cartao.id);
   const avisos = r.criada ? [avisoContaCriada(r.criada, true)] : [];
+
+  if (f.valor === null && f.vencimento === null) {
+    // "alterar vencimento nubank": pergunta o dia e espera a resposta.
+    if (!abertas.length) {
+      return { texto: `🧾 Não achei fatura em aberto do ${cartao.nome}. Mande com o valor: _fatura nubank 1547 vence dia 10_.`, status: "processada" };
+    }
+    await perguntar(ctx, { tipo: "vencimento", contaId: cartao.id });
+    return { texto: `📅 Qual o novo vencimento da fatura do *${cartao.nome}*? _Responda: dia 10 (ou 10/12)._`, status: "processada" };
+  }
 
   if (f.valor === null) {
     // Só o vencimento: ajusta a fatura que você já informou.
@@ -614,7 +659,78 @@ async function mostrarContas(ctx: Contexto, nome?: string | null): Promise<Resul
   const faturas = (await ctx.deps.repo.faturasAbertas(ctx.usuario.id, ctx.hoje)).filter((f) => ids.has(f.contaId));
   const texto = textoContas(contas, faturas, ctx.hoje, Boolean(nome));
   const semDias = contas.find((c) => c.tipo === "cartao_credito" && !c.diaFechamento);
+  if (semDias) await perguntar(ctx, { tipo: "dias_cartao", contaId: semDias.id });
   return { texto: semDias ? `${texto}\n\n${PEDIR_DIAS(semDias)}` : texto, status: "processada" };
+}
+
+const RE_PULAR = /^\W*(pular|pula|deixa|deixa\s+pra\s+la|nao\s+sei|depois|ignora|ignorar|nada)\W*$/;
+
+/**
+ * A mensagem é a resposta curta da pergunta em aberto? Se for, resolve e devolve o resultado.
+ * Se não for (a pessoa mudou de assunto), devolve null e a mensagem segue o caminho normal.
+ */
+async function responderPendencia(p: Pendencia, texto: string, ctx: Contexto): Promise<Resultado | null> {
+  const k = normalizar(texto);
+  if (RE_PULAR.test(k)) {
+    return { texto: p.tipo === "categoria" ? "👍 Ok, fica em Outros." : "👍 Ok, deixei pra lá.", status: "processada" };
+  }
+  switch (p.tipo) {
+    case "valor": {
+      // "almocei fora" → "Quanto foi?" → "35" (ou "35 no nubank")
+      if (!/\d/.test(texto) || palavras(texto) > 5) return null;
+      // Só vale se a resposta for o valor (com conta ou data, se quiser): "uber 20" é outro gasto.
+      const sozinha = interpretarPorRegras({ texto, hoje: ctx.hoje, diaDaSemana: diaDaSemana(ctx.hoje), contas: ctx.contas, categorias: ctx.categorias });
+      if (sozinha?.intencao !== "registrar" || sozinha.lancamentos.length !== 1 || sozinha.lancamentos[0].descricao !== "Gasto") {
+        return null;
+      }
+      const i = interpretarPorRegras({ texto: `${p.texto} ${texto}`, hoje: ctx.hoje, diaDaSemana: diaDaSemana(ctx.hoje), contas: ctx.contas, categorias: ctx.categorias });
+      if (i?.intencao !== "registrar" || i.lancamentos.length !== 1) return null;
+      return await registrar(i.lancamentos, ctx);
+    }
+    case "vencimento": {
+      if (palavras(texto) > 4) return null;
+      const vencimento = vencimentoNoTexto(texto, ctx.hoje);
+      const cartao = ctx.contas.find((c) => c.id === p.contaId);
+      if (!vencimento || !cartao) return null;
+      return await registrarFatura({ conta: cartao.nome, valor: null, vencimento, paga: false }, ctx);
+    }
+    case "dias_cartao": {
+      const numeros = [...k.matchAll(/\b(\d{1,2})\b/g)].map((m) => Number(m[1]));
+      const cartao = ctx.contas.find((c) => c.id === p.contaId);
+      if (numeros.length !== 2 || palavras(texto) > 8 || !cartao || numeros.some((n) => n < 1 || n > 31)) return null;
+      // "fecha 3 vence 10", "3 e 10", "vence 10 fecha 3"
+      const [a, b] = numeros;
+      const venceAntes = /\bvenc\w*\b.*\bfech/.test(k);
+      return await configurarCartao({
+        conta: cartao.nome,
+        diaFechamento: venceAntes ? b : a,
+        diaVencimento: venceAntes ? a : b,
+      }, ctx);
+    }
+    case "conta_fatura": {
+      if (palavras(texto) > 4) return null;
+      const conta = contaNoTexto(texto, ctx.contas);
+      if (!conta) return null;
+      return await registrarFatura({ conta, valor: p.valor, vencimento: p.vencimento, paga: p.paga }, ctx);
+    }
+    case "categoria": {
+      if (palavras(texto) > 4 || /\d/.test(texto)) return null;
+      // "roberto é moradia" é um comando completo: vale ele, não a pergunta.
+      const comando = interpretarPorRegras({ texto, hoje: ctx.hoje, diaDaSemana: diaDaSemana(ctx.hoje), contas: ctx.contas, categorias: ctx.categorias });
+      if (comando?.intencao === "categorizar") return null;
+      const categoria = categoriaNoTexto(texto, [p.tipoLancamento], ctx.categorias);
+      // "Outros" de novo é pedir a lista outra vez, não responder.
+      if (categoria && ehReserva(ctx.categorias.find((c) => c.nome === categoria))) return null;
+      if (!categoria) {
+        if (palavras(texto) > 2) return null;
+        // Parece resposta, mas não é uma categoria que existe: mostra as opções e continua esperando.
+        await perguntar(ctx, p, ESPERA_CATEGORIA_MIN);
+        const nomes = ctx.categorias.filter((c) => c.tipo === p.tipoLancamento).map((c) => c.nome.toLowerCase());
+        return { texto: `🤔 Não tenho a categoria *${texto.trim()}*. Escolha uma: ${nomes.join(", ")}.`, status: "processada" };
+      }
+      return await categorizar({ termo: p.termo, categoria }, ctx);
+    }
+  }
 }
 
 async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: string, deps: Dependencias) {
@@ -635,6 +751,14 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
     deps.repo.listarCategorias(usuario.id),
   ]);
   const ctx: Contexto = { canal: msg.canal, usuario, mensagemId, hoje, contas, categorias, deps };
+
+  // Resposta curta a uma pergunta que o bot fez ("dia 10", "35", "moradia")?
+  const pendencia = await deps.repo.lerPendencia(usuario.id);
+  if (pendencia) {
+    await deps.repo.limparPendencia(usuario.id);
+    const resposta = await responderPendencia(pendencia, msg.texto, ctx);
+    if (resposta) return { resultado: resposta, interpretacao: null };
+  }
 
   const interpretacao = comandoDireto(msg.texto) ??
     (await deps.interpretador.interpretar({
@@ -685,12 +809,26 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
         ? await categorizar(interpretacao.regra, ctx)
         : { texto: "📂 Mande assim: _roberto é moradia_.", status: "processada" };
       break;
-    case "esclarecer":
-      resultado = {
-        texto: interpretacao.pergunta ?? "Não entendi bem. Manda de novo com o valor? Ex.: _almoço 35 no nubank_.",
-        status: "processada",
-      };
+    case "esclarecer": {
+      // "almocei fora": parece um gasto, só faltou o valor. Pergunta e espera.
+      const texto = msg.texto.trim();
+      const pareceGasto = !/\d/.test(texto) && palavras(texto) <= 6 &&
+        categoriaNoTexto(texto, ["despesa"], categorias) !== null;
+      const daIa = interpretacao.pergunta && interpretacao.pergunta !== TEXTO_NAO_ENTENDI ? interpretacao.pergunta : null;
+      if (pareceGasto) {
+        await perguntar(ctx, { tipo: "valor", texto });
+        resultado = {
+          texto: daIa ?? `💬 Quanto foi *${texto}*? _Responda só o valor, ex.: 35 (ou 35 no nubank)._`,
+          status: "processada",
+        };
+      } else {
+        resultado = {
+          texto: interpretacao.pergunta ?? "Não entendi bem. Manda de novo com o valor? Ex.: _almoço 35 no nubank_.",
+          status: "processada",
+        };
+      }
       break;
+    }
     default:
       resultado = { texto: TEXTO_FORA_DO_ESCOPO, status: "processada" };
   }

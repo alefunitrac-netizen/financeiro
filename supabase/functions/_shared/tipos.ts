@@ -108,6 +108,14 @@ export interface LancamentoResumido {
   categoria: string | null;
 }
 
+/** A pergunta que o bot acabou de fazer, para entender a resposta curta que vier depois. */
+export type Pendencia =
+  | { tipo: "valor"; texto: string }
+  | { tipo: "vencimento"; contaId: string }
+  | { tipo: "dias_cartao"; contaId: string }
+  | { tipo: "conta_fatura"; valor: string; vencimento: DataISO | null; paga: boolean }
+  | { tipo: "categoria"; termo: string; tipoLancamento: TipoLancamento; descricao: string; valorCentavos: number };
+
 export interface Acao {
   id: string;
   /** O que volta, em palavras: "R$ 50,34 — Compra parcelada (3 parcelas)", "o vencimento da fatura do Cartão Nubank". */
@@ -197,6 +205,10 @@ export interface Repositorio {
   listarRegras(usuarioId: string): Promise<RegraCategoria[]>;
   criarRegra(usuarioId: string, termo: string, categoriaId: string): Promise<string>;
   desativarRegra(id: string): Promise<void>;
+  /** Pergunta em aberto (já descarta a vencida). */
+  lerPendencia(usuarioId: string): Promise<Pendencia | null>;
+  salvarPendencia(usuarioId: string, p: Pendencia, minutos: number): Promise<void>;
+  limparPendencia(usuarioId: string): Promise<void>;
   /** Despesas ou receitas ativas cuja descrição contém o termo (para aplicar uma regra nova). */
   transacoesComTermo(usuarioId: string, termo: string, tipo: TipoLancamento): Promise<Transacao[]>;
 }

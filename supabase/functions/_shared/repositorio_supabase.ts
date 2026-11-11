@@ -8,6 +8,7 @@ import type {
   NovaTransacao,
   LancamentoResumido,
   PassoDesfazer,
+  Pendencia,
   Repositorio,
   Transacao,
   Usuario,
@@ -375,6 +376,34 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
     async desativarRegra(id) {
       const { error } = await db.from("regras_categoria").update({ ativa: false }).eq("id", id);
       if (error) falhar("desativarRegra", error);
+    },
+
+    async lerPendencia(usuarioId) {
+      const { data, error } = await db
+        .from("pendencias")
+        .select("tipo, dados, expira_em")
+        .eq("usuario_id", usuarioId)
+        .maybeSingle();
+      if (error) falhar("lerPendencia", error);
+      if (!data || Date.parse(data.expira_em) < Date.now()) return null;
+      return { ...data.dados, tipo: data.tipo } as Pendencia;
+    },
+
+    async salvarPendencia(usuarioId, p, minutos) {
+      const { tipo, ...dados } = p;
+      const { error } = await db.from("pendencias").upsert({
+        usuario_id: usuarioId,
+        tipo,
+        dados,
+        expira_em: new Date(Date.now() + minutos * 60_000).toISOString(),
+        criado_em: new Date().toISOString(),
+      });
+      if (error) falhar("salvarPendencia", error);
+    },
+
+    async limparPendencia(usuarioId) {
+      const { error } = await db.from("pendencias").delete().eq("usuario_id", usuarioId);
+      if (error) falhar("limparPendencia", error);
     },
 
     async transacoesComTermo(usuarioId, termo, tipo) {
