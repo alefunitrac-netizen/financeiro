@@ -174,12 +174,15 @@ export interface OpcoesWebhookTelegram {
   configurar: () => Promise<{ ok: boolean; bot?: string; erro?: string }>;
   /** Rodada de sincronização com o banco (chamada pelo agendamento diário). */
   sincronizar?: () => Promise<unknown>;
+  /** Rodada de lembretes (fatura vencendo, resumo da semana), chamada pelo agendamento diário. */
+  lembretes?: () => Promise<unknown>;
   log: (evento: string, dados?: Record<string, unknown>) => void;
 }
 
 /**
  * Camada HTTP do webhook do Telegram.
- * GET ?acao=configurar registra o webhook no Telegram; GET ?acao=sincronizar lê os bancos.
+ * GET ?acao=configurar registra o webhook no Telegram; GET ?acao=sincronizar lê os bancos;
+ * GET ?acao=lembretes manda os lembretes do dia (cada aviso sai uma vez só).
  * As duas ações são idempotentes e a sincronização ignora rodadas muito próximas, então
  * não há o que um curioso com a URL consiga estragar.
  */
@@ -191,12 +194,13 @@ export function criarHandlerTelegram(op: OpcoesWebhookTelegram): (req: Request) 
         const r = await op.configurar();
         return Response.json(r, { status: r.ok ? 200 : 500 });
       }
-      if (acao === "sincronizar") {
-        if (!op.sincronizar) return Response.json({ ok: false, erro: "Open Finance não configurado" }, { status: 503 });
+      if (acao === "sincronizar" || acao === "lembretes") {
+        const tarefa = acao === "sincronizar" ? op.sincronizar : op.lembretes;
+        if (!tarefa) return Response.json({ ok: false, erro: `${acao} não configurado` }, { status: 503 });
         try {
-          return Response.json({ ok: true, ...(await op.sincronizar() as object) });
+          return Response.json({ ok: true, ...(await tarefa() as object) });
         } catch (e) {
-          op.log("erro_sincronizacao_geral", { erro: e instanceof Error ? e.message : String(e) });
+          op.log(`erro_${acao}_geral`, { erro: e instanceof Error ? e.message : String(e) });
           return Response.json({ ok: false }, { status: 500 });
         }
       }

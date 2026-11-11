@@ -29,6 +29,8 @@ import {
   resumoParaDesfazer,
   textoDesfeito,
   textoFatura,
+  textoLembretes,
+  apelidoDoCartao,
   textoRegistro,
   textoCategoria,
   textoPerguntaCategoria,
@@ -480,18 +482,33 @@ async function resumir(pedido: Interpretacao["resumo"], ctx: Contexto): Promise<
     };
   }
 
-  const reservas = ctx.categorias.filter((c) => ["outros", "outras receitas"].includes(normalizar(c.nome)));
+  const texto = await montarResumo(repo, ctx.usuario.id, ctx.categorias, intervalo, ctx.hoje, conta);
+  return { texto, status: "processada" };
+}
+
+/**
+ * Texto do resumo de um período: entradas, saídas, por categoria (com o que tem dentro de "Outros"),
+ * por conta e faturas a pagar. Usado no pedido de resumo e no resumo semanal automático.
+ */
+export async function montarResumo(
+  repo: Repositorio,
+  usuarioId: string,
+  todasCategorias: Categoria[],
+  intervalo: { inicio: DataISO; fim: DataISO; rotulo: string },
+  hoje: DataISO,
+  conta: Conta | null = null,
+): Promise<string> {
+  const reservas = todasCategorias.filter((c) => ehReserva(c));
   const [categorias, porConta, faturas, ...semCategoria] = await Promise.all([
-    repo.resumoPorCategoria(ctx.usuario.id, intervalo.inicio, intervalo.fim, conta?.id),
-    conta ? Promise.resolve([]) : repo.resumoPorConta(ctx.usuario.id, intervalo.inicio, intervalo.fim),
-    conta ? Promise.resolve([]) : repo.faturasAbertas(ctx.usuario.id, ctx.hoje),
+    repo.resumoPorCategoria(usuarioId, intervalo.inicio, intervalo.fim, conta?.id),
+    conta ? Promise.resolve([]) : repo.resumoPorConta(usuarioId, intervalo.inicio, intervalo.fim),
+    conta ? Promise.resolve([]) : repo.faturasAbertas(usuarioId, hoje),
     ...reservas.map((c) =>
-      repo.lancamentos(ctx.usuario.id, intervalo.inicio, intervalo.fim, { categoriaId: c.id, contaId: conta?.id, limite: 2 })
+      repo.lancamentos(usuarioId, intervalo.inicio, intervalo.fim, { categoriaId: c.id, contaId: conta?.id, limite: 2 })
     ),
   ]);
   const destaques = new Map(reservas.map((c, i) => [c.nome, semCategoria[i].itens]));
-  const texto = textoResumo(categorias, intervalo.rotulo, null, { porConta, faturas, conta, hoje: ctx.hoje, destaques });
-  return { texto, status: "processada" };
+  return textoResumo(categorias, intervalo.rotulo, null, { porConta, faturas, conta, hoje, destaques });
 }
 
 async function registrarFatura(f: PedidoFatura, ctx: Contexto): Promise<Resultado> {
@@ -511,6 +528,26 @@ async function registrarFatura(f: PedidoFatura, ctx: Contexto): Promise<Resultad
   }
   const abertas = await repo.faturasInformadas(ctx.usuario.id, cartao.id);
   const avisos = r.criada ? [avisoContaCriada(r.criada, true)] : [];
+
+  if (f.valor === null && f.vencimento === null && f.paga) {
+    // "paguei a fatura do nubank": a que você informou sai de "a pagar".
+    if (!abertas.length) {
+      return {
+        texto: `🧾 Não achei fatura em aberto do ${cartao.nome}. Quanto foi? _Responda: paguei a fatura do ${apelidoDoCartao(cartao)} 1547._`,
+        status: "processada",
+      };
+    }
+    await repo.confirmarTransacoes(abertas.map((a) => a.id));
+    const total = abertas.reduce((a, t) => a + t.valorCentavos, 0);
+    await anotar(ctx, `o pagamento de ${formatarReais(total)} do ${cartao.nome}`, [
+      { op: "status", ids: abertas.map((a) => a.id), status: "informado" },
+    ]);
+    const ultima = abertas[abertas.length - 1];
+    return {
+      texto: textoFatura({ ...ultima, valorCentavos: total, dataPagamento: ctx.hoje }, cartao, ctx.hoje, "✅ *Fatura paga:*"),
+      status: "processada",
+    };
+  }
 
   if (f.valor === null && f.vencimento === null) {
     // "alterar vencimento nubank": pergunta o dia e espera a resposta.
@@ -663,6 +700,14 @@ async function mostrarContas(ctx: Contexto, nome?: string | null): Promise<Resul
   return { texto: semDias ? `${texto}\n\n${PEDIR_DIAS(semDias)}` : texto, status: "processada" };
 }
 
+/** "parar lembretes", "ligar lembretes", "lembretes" (mostra como está). */
+async function configurarLembretes(ligar: boolean | null, ctx: Contexto): Promise<Resultado> {
+  const { repo } = ctx.deps;
+  if (ligar !== null) await repo.definirLembretes(ctx.usuario.id, ligar);
+  const ligado = ligar ?? await repo.lembretesLigados(ctx.usuario.id);
+  return { texto: textoLembretes(ligado), status: "processada" };
+}
+
 const RE_PULAR = /^\W*(pular|pula|deixa|deixa\s+pra\s+la|nao\s+sei|depois|ignora|ignorar|nada)\W*$/;
 
 /**
@@ -803,6 +848,9 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
       break;
     case "contas":
       resultado = await mostrarContas(ctx, interpretacao.contaConsulta);
+      break;
+    case "lembretes":
+      resultado = await configurarLembretes(interpretacao.lembretes ?? null, ctx);
       break;
     case "categorizar":
       resultado = interpretacao.regra

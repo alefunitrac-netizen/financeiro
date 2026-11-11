@@ -421,6 +421,41 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
       return (data ?? []).map(deLinha).filter((t) => contemTermo(chave(t.descricao), termo));
     },
 
+    async lembretesLigados(usuarioId) {
+      const { data, error } = await db.from("usuarios").select("lembretes").eq("id", usuarioId).maybeSingle();
+      if (error) falhar("lembretesLigados", error);
+      return data?.lembretes !== false;
+    },
+
+    async definirLembretes(usuarioId, ligado) {
+      const { error } = await db.from("usuarios").update({ lembretes: ligado }).eq("id", usuarioId);
+      if (error) falhar("definirLembretes", error);
+    },
+
+    async destinatariosLembretes() {
+      const { data, error } = await db
+        .from("usuarios")
+        .select(`${COLUNAS_USUARIO}, telegram_id`)
+        .eq("lembretes", true)
+        .not("telegram_id", "is", null);
+      if (error) falhar("destinatariosLembretes", error);
+      return (data ?? []).map((l: Linha) => ({ usuario: deLinhaUsuario(l)!, telegramId: String(l.telegram_id) }));
+    },
+
+    async reservarAviso(usuarioId, chave) {
+      const { error } = await db.from("avisos_enviados").insert({ usuario_id: usuarioId, chave });
+      if (error) {
+        if (error.code === "23505") return false; // já enviado
+        falhar("reservarAviso", error);
+      }
+      return true;
+    },
+
+    async liberarAviso(usuarioId, chave) {
+      const { error } = await db.from("avisos_enviados").delete().eq("usuario_id", usuarioId).eq("chave", chave);
+      if (error) falhar("liberarAviso", error);
+    },
+
     async faturasAbertas(usuarioId, hoje) {
       const { data, error } = await db.rpc("faturas_abertas", { p_usuario: usuarioId, p_hoje: hoje });
       if (error) falhar("faturasAbertas", error);

@@ -211,6 +211,14 @@ export interface Repositorio {
   limparPendencia(usuarioId: string): Promise<void>;
   /** Despesas ou receitas ativas cuja descrição contém o termo (para aplicar uma regra nova). */
   transacoesComTermo(usuarioId: string, termo: string, tipo: TipoLancamento): Promise<Transacao[]>;
+  lembretesLigados(usuarioId: string): Promise<boolean>;
+  definirLembretes(usuarioId: string, ligado: boolean): Promise<void>;
+  /** Quem recebe lembretes: Telegram vinculado e lembretes ligados. */
+  destinatariosLembretes(): Promise<{ usuario: Usuario; telegramId: string }[]>;
+  /** Marca o aviso como enviado. False se ele já tinha sido enviado (não manda de novo). */
+  reservarAviso(usuarioId: string, chave: string): Promise<boolean>;
+  /** Desfaz a reserva quando o envio falhou, para tentar na próxima rodada. */
+  liberarAviso(usuarioId: string, chave: string): Promise<void>;
 }
 
 // ---------- Saída do interpretador (modelo de IA) ----------
@@ -226,6 +234,7 @@ export type Intencao =
   | "ultimo"
   | "contas"
   | "categorizar"
+  | "lembretes"
   | "esclarecer"
   | "fora_do_escopo";
 
@@ -292,6 +301,8 @@ export interface Interpretacao {
   desfazerAlvo?: string | null;
   /** Intenção "categorizar": "roberto é moradia". */
   regra?: { termo: string; categoria: string } | null;
+  /** Intenção "lembretes": true liga, false desliga, null só mostra como está. */
+  lembretes?: boolean | null;
   /** Intenção "contas": mostrar só esta conta ("nubank", "vencimento nubank"). */
   contaConsulta?: string | null;
   /** Pergunta curta quando faltou informação (intenção "esclarecer"). */

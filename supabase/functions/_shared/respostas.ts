@@ -1,6 +1,7 @@
 // Textos que o bot devolve (WhatsApp e Telegram). Marcação: *negrito*, _itálico_.
 import { dataAmigavel, hojeNoFuso, vencimentoFatura } from "./datas.ts";
 import { formatarReais } from "./dinheiro.ts";
+import { bancoDoTexto } from "./bancos.ts";
 import { chave } from "./texto.ts";
 import type {
   Categoria,
@@ -303,6 +304,22 @@ export function textoCategorizado(termo: string, categoria: string, mudados: num
   return linhas.join("\n") + RODAPE;
 }
 
+/** Como você chama o cartão numa mensagem: "Cartão Nubank" → "nubank". */
+export function apelidoDoCartao(c: Conta): string {
+  return chave(c.instituicao || bancoDoTexto(c.nome) || c.nome.replace(/^Cartão\s+/i, "").replace(/\s+final\s+\d+$/i, "")).trim() || "cartao";
+}
+
+export function textoLembretes(ligado: boolean): string {
+  if (!ligado) return "🔕 *Lembretes desligados.* Para voltar: _ligar lembretes_.";
+  return [
+    "🔔 *Lembretes ligados.* Eu aviso sozinho, de manhã:",
+    "• fatura do cartão 3 dias antes e no dia do vencimento",
+    "• resumo da semana passada, toda segunda",
+    "• conta no negativo (com banco conectado)",
+    "_Para desligar: parar lembretes._",
+  ].join("\n");
+}
+
 /** Resposta ao informar uma fatura. Ela não soma nas despesas: os gastos são as compras dentro dela. */
 export function textoFatura(t: Transacao, cartao: Conta | null, hoje: DataISO, cabecalho = "🧾 *Fatura registrada:*"): string {
   const linhas = [
@@ -312,8 +329,7 @@ export function textoFatura(t: Transacao, cartao: Conta | null, hoje: DataISO, c
       : `📅 ${t.dataPagamento ? `Vence ${dataAmigavel(t.dataPagamento, hoje)}` : "Vencimento a definir"}`,
   ];
   if (!t.dataPagamento && !cabecalho.startsWith("✅")) {
-    const k = chave(cartao?.instituicao || cartao?.nome.replace(/^Cartão\s+/i, "") || "nubank").trim();
-    linhas.push(`_Quando vence? Responda: fatura ${k} vence dia 15._`);
+    linhas.push(`_Quando vence? Responda: fatura ${cartao ? apelidoDoCartao(cartao) : "nubank"} vence dia 15._`);
   }
   return linhas.join("\n") + RODAPE;
 }
@@ -376,6 +392,8 @@ export function textoAjuda(nome: string): string {
 • _paguei a fatura do nubank 1547_
 • _nubank_ mostra o cartão; _contas_ mostra todas
 _A fatura fica em "a pagar" e não soma nas despesas: as despesas são as compras dela._
+
+*Lembretes*: aviso a fatura antes de vencer e mando o resumo da semana na segunda. _parar lembretes_ desliga.
 
 *desfazer* volta a última coisa que fiz (pode repetir).
 Para ajustar o último: _era 52_, _foi no nubank_, _foi no débito_.

@@ -5,6 +5,7 @@
 // Depois de salvar TELEGRAM_BOT_TOKEN nos segredos, abra uma vez:
 //   https://<projeto>.supabase.co/functions/v1/telegram-webhook?acao=configurar
 // Com PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET, ?acao=sincronizar lê os bancos (agendado no banco).
+// ?acao=lembretes manda os lembretes do dia (agendado às 8h).
 import {
   avisarSeFaltar,
   criarClienteBanco,
@@ -13,6 +14,7 @@ import {
   log,
   montarDependencias,
 } from "../_shared/ambiente.ts";
+import { criarLembretes } from "../_shared/lembretes.ts";
 import { criarClientePluggy, criarSincronizador } from "../_shared/open_finance.ts";
 import { processarMensagem } from "../_shared/processador.ts";
 import { criarRepositorioBanco } from "../_shared/repositorio_banco.ts";
@@ -45,6 +47,12 @@ const sincronizador = clientId && clientSecret
     guardarPergunta: (usuarioId, p) => deps.repo.salvarPendencia(usuarioId, p, 24 * 60),
   })
   : null;
+const lembretes = criarLembretes({
+  repo: deps.repo,
+  agora: () => new Date(),
+  avisar: (telegramId, texto) => enviarMensagemTelegram({ token, chatId: Number(telegramId), texto }),
+  log,
+});
 if (sincronizador) deps.sincronizarBanco = (usuarioId) => sincronizador.sincronizarUsuario(usuarioId);
 
 Deno.serve(
@@ -55,6 +63,7 @@ Deno.serve(
     configurar: () =>
       configurarBotTelegram({ token, segredo, url: `${env("SUPABASE_URL")}/functions/v1/telegram-webhook` }),
     sincronizar: sincronizador ? () => sincronizador.sincronizarTodos() : undefined,
+    lembretes: () => lembretes.rodar(),
     log,
   }),
 );

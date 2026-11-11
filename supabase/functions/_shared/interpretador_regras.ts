@@ -482,12 +482,14 @@ function lerFatura(texto: string, ctx: ContextoInterpretacao): Interpretacao | n
   t.tirar(RE_FECHA);
   tirarData(t, ctx.hoje);
   const centavos = tirarValor(t);
-  if (centavos === null && !vencimento) return null;
+  const paga = RE_PAGUEI.test(chave(texto));
+  // "paguei a fatura do nubank" (sem valor): a fatura informada sai de "a pagar".
+  if (centavos === null && !vencimento && !paga) return null;
   const fatura: PedidoFatura = {
     conta,
     valor: centavos === null ? null : centavosEmTexto(centavos),
     vencimento,
-    paga: RE_PAGUEI.test(chave(texto)),
+    paga,
   };
   return { intencao: "fatura", ...VAZIO, fatura };
 }
@@ -568,6 +570,19 @@ export function vencimentoNoTexto(texto: string, hoje: DataISO): DataISO | null 
   return tirarVencimento(new Texto(`vence dia ${limpo}`), hoje);
 }
 
+// "parar lembretes", "desligar avisos", "ligar lembretes", "lembretes"
+const RE_LEMBRETES = /\b(lembretes?|avisos?|notificac\w*|alertas?)\b/;
+const RE_DESLIGAR = /\b(para|parar|pare|pausa\w*|deslig\w*|desativ\w*|silenci\w*|sem|nao|chega|tir\w*|cancel\w*|stop)\b/;
+const RE_LIGAR = /\b(lig\w*|ativ\w*|reativ\w*|volt\w*|quero|religar)\b/;
+
+function lerLembretes(k: string): Interpretacao | null {
+  if (!RE_LEMBRETES.test(k) || palavrasDe(k) > 6) return null;
+  const lembretes = RE_DESLIGAR.test(k) ? false : RE_LIGAR.test(k) ? true : null;
+  return { intencao: "lembretes", ...VAZIO, lembretes };
+}
+
+const palavrasDe = (k: string) => k.split(/[^a-z0-9]+/).filter(Boolean).length;
+
 const RE_ALTERAR = /\b(alter\w*|mud\w*|troc\w*|corrig\w*|ajust\w*)\b/;
 
 /** Entende a mensagem por regras. Devolve null quando não tem certeza do que ela pede. */
@@ -599,6 +614,8 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
   const lancamentos = dividir(texto, ctx).map((s) => lerLancamento(s, ctx));
   const temValor = lancamentos.every((l) => l !== null);
   if (!temValor) {
+    const lembretes = lerLembretes(k);
+    if (lembretes) return lembretes;
     if (RE_DESFAZER.test(k)) {
       const alvo = /\b(vencimento|fatura|parcela|parcelado|parcelada|correcao|fechamento|dias)\b/.exec(k)?.[1] ?? null;
       return { intencao: "desfazer", ...VAZIO, desfazerAlvo: alvo };

@@ -238,6 +238,31 @@ export class RepoMemoria implements Repositorio {
       this.ativas().filter((t) => t.tipo === tipo && contemTermo(chave(t.descricao), termo)) as Transacao[],
     );
   }
+  lembretes = true;
+  avisos = new Set<string>();
+  lembretesLigados() {
+    return Promise.resolve(this.lembretes);
+  }
+  definirLembretes(_u: string, ligado: boolean) {
+    this.lembretes = ligado;
+    return Promise.resolve();
+  }
+  destinatariosLembretes() {
+    return Promise.resolve(
+      this.lembretes
+        ? this.usuarios.filter((u) => u.telegramId).map((u) => ({ usuario: this.publico(u)!, telegramId: u.telegramId! }))
+        : [],
+    );
+  }
+  reservarAviso(_u: string, chave: string) {
+    if (this.avisos.has(chave)) return Promise.resolve(false);
+    this.avisos.add(chave);
+    return Promise.resolve(true);
+  }
+  liberarAviso(_u: string, chave: string) {
+    this.avisos.delete(chave);
+    return Promise.resolve();
+  }
   faturasAbertas(_u: string, hoje: string): Promise<LinhaFatura[]> {
     const saida: LinhaFatura[] = [];
     for (const t of this.transacoes) {
