@@ -4,7 +4,7 @@
 //
 //   POST /entrar           {codigo}        → {token, nome}
 //   POST /sair                             → encerra esta sessão
-//   GET  /resumo?mes=AAAA-MM               → tudo que o painel mostra
+//   GET  /resumo?mes=AAAA-MM&conta=<id>    → tudo que o painel mostra (conta: só os lançamentos dela)
 //   PUT  /renda            {...ConfigRenda}
 //   POST /calcular-renda   {...ConfigRenda}  → holerite, sem salvar
 //   POST /fixas            {nome, tipo, valorCentavos, diaVencimento}
@@ -110,7 +110,8 @@ const deRenda = (r: Linha | null): ConfigRenda | null =>
     }
     : null;
 
-async function resumo(usuarioId: string, mesPedido: string | null) {
+async function resumo(usuarioId: string, mesPedido: string | null, contaPedida: string | null) {
+  const conta = contaPedida && /^[0-9a-f-]{36}$/.test(contaPedida) ? contaPedida : null;
   const { data: u, error: eu } = await db
     .from("usuarios")
     .select("nome, fuso_horario, renda_mensal_centavos")
@@ -129,11 +130,21 @@ async function resumo(usuarioId: string, mesPedido: string | null) {
       return data as T;
     });
   const [cat, catAnt, fat, contas, renda, fluxo, primeira, fixas, aportes, lanc] = await Promise.all([
-    q<Linha[]>(db.rpc("resumo_por_categoria", { p_usuario: usuarioId, p_inicio: mes, p_fim: fim }), "categorias"),
-    q<Linha[]>(db.rpc("resumo_por_categoria", { p_usuario: usuarioId, p_inicio: anterior, p_fim: somarDias(mes, -1) }), "anterior"),
+    q<Linha[]>(
+      conta
+        ? db.rpc("resumo_por_categoria_conta", { p_usuario: usuarioId, p_inicio: mes, p_fim: fim, p_conta: conta })
+        : db.rpc("resumo_por_categoria", { p_usuario: usuarioId, p_inicio: mes, p_fim: fim }),
+      "categorias",
+    ),
+    q<Linha[]>(
+      conta
+        ? db.rpc("resumo_por_categoria_conta", { p_usuario: usuarioId, p_inicio: anterior, p_fim: somarDias(mes, -1), p_conta: conta })
+        : db.rpc("resumo_por_categoria", { p_usuario: usuarioId, p_inicio: anterior, p_fim: somarDias(mes, -1) }),
+      "anterior",
+    ),
     q<Linha[]>(db.rpc("faturas_abertas", { p_usuario: usuarioId, p_hoje: hoje }), "faturas"),
     q<Linha[]>(
-      db.from("contas").select("nome, tipo, saldo_centavos, limite_centavos").eq("usuario_id", usuarioId).eq("ativa", true).order("nome"),
+      db.from("contas").select("id, nome, tipo, saldo_centavos, limite_centavos").eq("usuario_id", usuarioId).eq("ativa", true).order("nome"),
       "contas",
     ),
     q<Linha | null>(db.from("renda_config").select("*").eq("usuario_id", usuarioId).maybeSingle(), "renda"),
@@ -152,13 +163,14 @@ async function resumo(usuarioId: string, mesPedido: string | null) {
       "fixas",
     ),
     q<Linha[]>(db.from("aportes").select("id, data, valor_centavos, descricao").eq("usuario_id", usuarioId).order("data"), "aportes"),
-    q<Linha[]>(
-      db.from("transacoes")
+    (() => {
+      let l = db.from("transacoes")
         .select("data_transacao, descricao, valor_centavos, tipo, categorias(nome), contas(nome)")
         .eq("usuario_id", usuarioId).neq("status", "cancelado").in("tipo", ["despesa", "receita"])
-        .gte("data_transacao", mes).lte("data_transacao", fim).order("data_transacao", { ascending: false }).limit(500),
-      "lancamentos",
-    ),
+        .gte("data_transacao", mes).lte("data_transacao", fim);
+      if (conta) l = l.eq("conta_id", conta);
+      return q<Linha[]>(l.order("data_transacao", { ascending: false }).limit(500), "lancamentos");
+    })(),
   ]);
 
   const resumoLinha = (l: Linha) => ({
@@ -173,7 +185,7 @@ async function resumo(usuarioId: string, mesPedido: string | null) {
     mes,
     categorias: (cat ?? []).map(resumoLinha),
     categoriasAnterior: (catAnt ?? []).map(resumoLinha),
-    faturas: (fat ?? []).map((l) => ({
+    faturas: (fat ?? []).filter((l) => !conta || l.conta_id === conta).map((l) => ({
       contaId: l.conta_id,
       conta: l.conta,
       vencimento: l.vencimento,
@@ -181,6 +193,7 @@ async function resumo(usuarioId: string, mesPedido: string | null) {
       informada: Boolean(l.informada),
     })),
     contas: (contas ?? []).map((c) => ({
+      id: c.id,
       nome: c.nome,
       tipo: c.tipo,
       saldoCentavos: c.saldo_centavos == null ? null : Number(c.saldo_centavos),
@@ -212,7 +225,7 @@ async function resumo(usuarioId: string, mesPedido: string | null) {
       conta: l.contas?.nome ?? null,
     })),
   };
-  return montarPainel(dados);
+  return { ...montarPainel(dados), contaFiltro: conta };
 }
 
 async function salvarRenda(usuarioId: string, corpo: Record<string, unknown>) {
@@ -261,7 +274,7 @@ async function rotear(req: Request): Promise<unknown> {
   const { usuarioId, sessaoId } = await usuarioDaSessao(req);
   if (id !== undefined && !UUID.test(id)) throw new ErroHttp(400, "id inválido");
 
-  if (req.method === "GET" && recurso === "resumo") return resumo(usuarioId, url.searchParams.get("mes"));
+  if (req.method === "GET" && recurso === "resumo") return resumo(usuarioId, url.searchParams.get("mes"), url.searchParams.get("conta"));
   if (req.method === "POST" && recurso === "sair") {
     await db.from("acessos_painel").update({ revogado: true }).eq("id", sessaoId);
     return { ok: true };

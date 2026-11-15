@@ -58,7 +58,7 @@ export interface DadosPainel {
   categorias: LinhaResumo[];
   categoriasAnterior: LinhaResumo[];
   faturas: LinhaFatura[];
-  contas: { nome: string; tipo: string; saldoCentavos: number | null; limiteCentavos: number | null }[];
+  contas: { id?: string; nome: string; tipo: string; saldoCentavos: number | null; limiteCentavos: number | null }[];
   renda: ConfigRenda | null;
   rendaInformada: number | null;
   historico: MesFluxo[];
