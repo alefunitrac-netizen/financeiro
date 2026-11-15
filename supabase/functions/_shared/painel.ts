@@ -203,7 +203,7 @@ export function validarRenda(b: Record<string, unknown>): ConfigRenda | string {
   return { regime, brutoCentavos: bruto, dependentes, descontos, inssManual: inss, irrfManual: irrf, metaPercentual: meta };
 }
 
-const TIPOS_FIXA = ["luz", "agua", "internet", "telefone", "assinatura", "moradia", "outro"];
+const TIPOS_FIXA = ["luz", "agua", "gas", "internet", "telefone", "assinatura", "moradia", "outro"];
 
 export function validarFixa(b: Record<string, unknown>): Omit<DespesaFixa, "id"> | string {
   const nome = typeof b.nome === "string" ? b.nome.trim().slice(0, 60) : "";

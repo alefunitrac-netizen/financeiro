@@ -79,6 +79,7 @@ Deno.test("validação do que o site manda", () => {
   const ok = validarRenda({ regime: "clt", brutoCentavos: 600_000, metaPercentual: 15, descontos: [{ nome: "VT", valorCentavos: 100 }] });
   assert.equal(typeof ok, "object");
   assert.equal(typeof validarFixa({ nome: "Luz", tipo: "bomba", valorCentavos: 100 }), "string");
+  assert.equal(typeof validarFixa({ nome: "Gás", tipo: "gas", valorCentavos: 12000, diaVencimento: 8 }), "object");
   assert.deepEqual(validarFixa({ nome: " Luz ", tipo: "luz", valorCentavos: 15000, diaVencimento: 10 }), {
     nome: "Luz",
     tipo: "luz",
