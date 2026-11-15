@@ -43,3 +43,22 @@ Deno.test("meta de investimento e projeção com juros compostos", () => {
   assert.equal(p[11], 1_200_000);
   assert.ok(projetarInvestimento(100_000, 12, 0.01)[11] > 1_200_000);
 });
+
+Deno.test("parcela com fim: some do líquido depois do último mês e a renda sobe", async () => {
+  const { rendaAoLongo, proximoMes } = await import("../_shared/salario.ts");
+  const c = {
+    regime: "manual" as const, brutoCentavos: 300_000, dependentes: 0, inssManual: 0, irrfManual: 0, metaPercentual: 10,
+    descontos: [
+      { nome: "Empréstimo consignado", valorCentavos: 50_000, ateMes: "2027-01" },
+      { nome: "Plano de saúde", valorCentavos: 20_000 },
+    ],
+  };
+  assert.equal(calcularHolerite(c, "2026-11").liquido, 230_000);
+  assert.equal(calcularHolerite(c, "2027-01").liquido, 230_000, "último mês ainda desconta");
+  assert.equal(calcularHolerite(c, "2027-02").liquido, 280_000);
+  const f = rendaAoLongo(c, "2026-11");
+  assert.deepEqual(f.meses.map((m) => m.mes), ["2026-11", "2026-12", "2027-01", "2027-02"]);
+  assert.deepEqual(f.marcos, [{ mes: "2027-02", nomes: ["Empréstimo consignado"], aumento: 50_000, liquido: 280_000 }]);
+  assert.deepEqual(rendaAoLongo({ ...c, descontos: [c.descontos[1]] }, "2026-11"), { meses: [], marcos: [] }, "sem parcelas, sem linha do tempo");
+  assert.equal(proximoMes("2026-12"), "2027-01");
+});

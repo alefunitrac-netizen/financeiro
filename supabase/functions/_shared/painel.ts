@@ -3,7 +3,7 @@
 import { diasNoMes, somarMeses } from "./datas.ts";
 import { calcularBase, inicioDoMes, type LinhaProjecao, projetar } from "./previsao.ts";
 import { faturasParaMostrar } from "./respostas.ts";
-import { calcularHolerite, type ConfigRenda, type Holerite, metaMensal, projetarInvestimento } from "./salario.ts";
+import { calcularHolerite, type ConfigRenda, type Holerite, metaMensal, projetarInvestimento, rendaAoLongo } from "./salario.ts";
 import type { DataISO, LinhaFatura, LinhaResumo, MesFluxo } from "./tipos.ts";
 
 // ---------- Acesso ----------
@@ -90,7 +90,8 @@ export function montarPainel(d: DadosPainel) {
   const entradasAnterior = soma(d.categoriasAnterior, "receita");
 
   // Renda: o holerite que você montou; senão a informada no bot; senão a média do que entrou.
-  const holerite: Holerite | null = d.renda && d.renda.brutoCentavos > 0 ? calcularHolerite(d.renda) : null;
+  const mesHoje = d.hoje.slice(0, 7);
+  const holerite: Holerite | null = d.renda && d.renda.brutoCentavos > 0 ? calcularHolerite(d.renda, mesHoje) : null;
   const base = calcularBase(d.historico, d.primeiraData, d.hoje, holerite?.liquido ?? d.rendaInformada);
   const liquido = holerite?.liquido ?? base.renda;
   const origemRenda = holerite ? "holerite" : d.rendaInformada !== null ? "informada" : base.renda !== null ? "estimada" : null;
@@ -147,6 +148,8 @@ export function montarPainel(d: DadosPainel) {
       liquido,
       holerite,
       config: d.renda,
+      /** Líquido mês a mês até as parcelas (consignado etc.) terminarem. */
+      futura: d.renda && holerite ? rendaAoLongo(d.renda, mesHoje) : { meses: [], marcos: [] },
     },
     fixas: {
       itens: d.fixas
@@ -197,8 +200,9 @@ export function validarRenda(b: Record<string, unknown>): ConfigRenda | string {
   for (const x of b.descontos as Record<string, unknown>[]) {
     const nome = typeof x?.nome === "string" ? x.nome.trim().slice(0, 40) : "";
     const valor = inteiro(x?.valorCentavos, 0, 100_000_000);
-    if (!nome || valor === null) return "desconto inválido";
-    descontos.push({ nome, valorCentavos: valor });
+    const ateMes = x?.ateMes == null || x.ateMes === "" ? null : typeof x.ateMes === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(x.ateMes) ? x.ateMes : undefined;
+    if (!nome || valor === null || ateMes === undefined) return "desconto inválido";
+    descontos.push(ateMes ? { nome, valorCentavos: valor, ateMes } : { nome, valorCentavos: valor });
   }
   return { regime, brutoCentavos: bruto, dependentes, descontos, inssManual: inss, irrfManual: irrf, metaPercentual: meta };
 }

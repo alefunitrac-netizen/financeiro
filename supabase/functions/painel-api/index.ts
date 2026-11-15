@@ -25,7 +25,10 @@ import {
   validarFixa,
   validarRenda,
 } from "../_shared/painel.ts";
-import { calcularHolerite, type ConfigRenda } from "../_shared/salario.ts";
+import { calcularHolerite, type ConfigRenda, rendaAoLongo } from "../_shared/salario.ts";
+
+/** Mês corrente ("2026-11"): parcela que já terminou não entra no líquido de agora. */
+const mesAgora = () => hojeNoFuso("America/Sao_Paulo").slice(0, 7);
 
 const env = (n: string) => Deno.env.get(n) ?? "";
 function chaveSecreta(): string {
@@ -229,12 +232,12 @@ async function salvarRenda(usuarioId: string, corpo: Record<string, unknown>) {
   if (error) falhar("renda", error);
   // O líquido vira a renda das simulações do bot ("vou comprar... cabe?").
   // Sem salário preenchido (ex.: só mudou a meta), a renda que o bot já tinha fica como está.
-  const liquido = r.brutoCentavos > 0 ? calcularHolerite(r).liquido : 0;
+  const liquido = r.brutoCentavos > 0 ? calcularHolerite(r, mesAgora()).liquido : 0;
   if (liquido > 0) {
     const { error: e2 } = await db.from("usuarios").update({ renda_mensal_centavos: liquido }).eq("id", usuarioId);
     if (e2) falhar("renda_usuario", e2);
   }
-  return { ok: true, holerite: r.brutoCentavos > 0 ? calcularHolerite(r) : null };
+  return { ok: true, holerite: r.brutoCentavos > 0 ? calcularHolerite(r, mesAgora()) : null };
 }
 
 async function lerCorpo(req: Request): Promise<Record<string, unknown>> {
@@ -268,7 +271,7 @@ async function rotear(req: Request): Promise<unknown> {
   if (req.method === "POST" && recurso === "calcular-renda") {
     const r = validarRenda(await lerCorpo(req));
     if (typeof r === "string") throw new ErroHttp(400, r);
-    return { holerite: calcularHolerite(r) };
+    return { holerite: calcularHolerite(r, mesAgora()), futura: rendaAoLongo(r, mesAgora()) };
   }
 
   if (recurso === "fixas") {

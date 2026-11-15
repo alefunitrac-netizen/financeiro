@@ -51,7 +51,18 @@ export function calcularIrrf(bruto: number, inss: number, dependentes = 0, pensa
 export interface Desconto {
   nome: string;
   valorCentavos: number;
+  /** Último mês descontado ("2027-03"), para parcelas como o empréstimo consignado. Sem ele, é fixo. */
+  ateMes?: string | null;
 }
+
+/** "2026-11" → "2026-12". */
+export function proximoMes(mes: string, n = 1): string {
+  const [a, m] = mes.split("-").map(Number);
+  const t = a * 12 + (m - 1) + n;
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+}
+
+const ativoEm = (d: Desconto, mes: string | undefined) => !mes || !d.ateMes || d.ateMes >= mes;
 
 export interface ConfigRenda {
   /** "clt": calcula INSS e IR a partir do bruto; "manual": você digita os descontos. */
@@ -78,8 +89,9 @@ export interface Holerite {
   origemImpostos: "calculado" | "informado";
 }
 
-export function calcularHolerite(c: ConfigRenda): Holerite {
-  const outros = c.descontos.filter((d) => d.valorCentavos > 0);
+/** Holerite de um mês ("2026-11"); sem mês, conta todos os descontos. Parcela que já terminou não desconta. */
+export function calcularHolerite(c: ConfigRenda, mes?: string): Holerite {
+  const outros = c.descontos.filter((d) => d.valorCentavos > 0 && ativoEm(d, mes));
   const somaOutros = outros.reduce((a, d) => a + d.valorCentavos, 0);
   if (c.regime === "manual") {
     const inss = c.inssManual ?? 0;
@@ -116,4 +128,40 @@ export function projetarInvestimento(aporte: number, meses: number, taxaMensal =
     saida.push(Math.round(saldo));
   }
   return saida;
+}
+
+export interface MarcoRenda {
+  /** Primeiro mês sem o desconto ("2027-04"). */
+  mes: string;
+  nomes: string[];
+  aumento: number;
+  liquido: number;
+}
+
+/**
+ * Como o líquido muda conforme as parcelas terminam: um ponto por mês, de agora até o mês depois da
+ * última parcela (no máximo 60 meses), e os marcos em que a renda sobe.
+ */
+export function rendaAoLongo(c: ConfigRenda, mesAtual: string, maxMeses = 60): { meses: { mes: string; liquido: number }[]; marcos: MarcoRenda[] } {
+  const fins = c.descontos.filter((d) => d.ateMes && d.ateMes >= mesAtual && d.valorCentavos > 0).map((d) => d.ateMes!);
+  if (!fins.length || c.brutoCentavos <= 0) return { meses: [], marcos: [] };
+  const ultimo = fins.sort().at(-1)!;
+  const meses: { mes: string; liquido: number }[] = [];
+  for (let k = 0, mes = mesAtual; k < maxMeses; k++, mes = proximoMes(mes)) {
+    meses.push({ mes, liquido: calcularHolerite(c, mes).liquido });
+    if (mes > ultimo) break;
+  }
+  const marcos: MarcoRenda[] = [];
+  for (let i = 1; i < meses.length; i++) {
+    const aumento = meses[i].liquido - meses[i - 1].liquido;
+    if (aumento > 0) {
+      marcos.push({
+        mes: meses[i].mes,
+        nomes: c.descontos.filter((d) => d.ateMes === meses[i - 1].mes).map((d) => d.nome),
+        aumento,
+        liquido: meses[i].liquido,
+      });
+    }
+  }
+  return { meses, marcos };
 }
