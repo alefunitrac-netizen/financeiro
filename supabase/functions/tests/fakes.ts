@@ -297,7 +297,11 @@ export class RepoMemoria implements Repositorio {
       const conta = this.contas.find((c) => c.id === t.contaId);
       if (!conta) continue;
       if (t.tipo === "pagamento_fatura" && t.status === "informado") {
-        saida.push({ contaId: conta.id, conta: conta.nome, vencimento: t.dataPagamento, totalCentavos: t.valorCentavos, informada: true });
+        // Como no banco: o informado + as compras do mesmo vencimento registradas depois dele.
+        const depois = this.ativas()
+          .filter((x) => x.contaId === conta.id && x.tipo !== "pagamento_fatura" && t.dataPagamento !== null && x.dataPagamento === t.dataPagamento && x.ordem > t.ordem)
+          .reduce((a, x) => a + (x.tipo === "despesa" ? x.valorCentavos : -x.valorCentavos), 0);
+        saida.push({ contaId: conta.id, conta: conta.nome, vencimento: t.dataPagamento, totalCentavos: t.valorCentavos + depois, informada: true });
       } else if (
         conta.tipo === "cartao_credito" && t.status !== "cancelado" && t.tipo !== "pagamento_fatura" &&
         t.dataPagamento && t.dataPagamento >= hoje

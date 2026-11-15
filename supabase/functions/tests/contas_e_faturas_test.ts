@@ -237,3 +237,19 @@ Deno.test("o bot lembra da pergunta que fez: respostas curtas", async () => {
   await enviar("outros");
   assert.match(await enviar("pular"), /fica em Outros/);
 });
+
+Deno.test("compras no cartão depois de informar a fatura entram no total dela", async () => {
+  const r = criarDeps();
+  r.deps.interpretador = criarInterpretadorHibrido(null, () => {});
+  const enviar = async (texto: string) => {
+    await processarMensagem(mensagem(texto), r.deps);
+    return r.enviadas[r.enviadas.length - 1].texto;
+  };
+  // Nubank crédito fecha dia 3 e vence dia 10; hoje é 07/11: compra de hoje cai na fatura de 10/12.
+  await enviar("fatura nubank 1547 vence dia 10/12");
+  await enviar("gastei 13 no crédito nubank");
+  await enviar("gastei 14 no crédito nubank");
+  const fatura = await enviar("fatura nubank?");
+  assert.match(fatura, /Nubank crédito: R\$ 1\.574,00 · vence 10\/12/);
+  assert.doesNotMatch(fatura, /R\$ 1\.547,00/);
+});
