@@ -657,6 +657,11 @@ export function interpretarPorRegras(ctx: ContextoInterpretacao): Interpretacao 
   if (!temValor) {
     const lembretes = lerLembretes(k);
     if (lembretes) return lembretes;
+    // "quero ver o painel", "manda o link do dashboard", "sair do painel em todos os aparelhos"
+    if (/\b(painel|dashboard)\b/.test(k) && palavrasDe(k) <= 8) {
+      const sair = /\b(sair|desconect\w*|encerr\w*|bloque\w*|revog\w*|deslog\w*)\b/.test(k);
+      return { intencao: "painel", ...VAZIO, painel: sair ? "sair" : "entrar" };
+    }
     if (RE_PREVISAO.test(k) || (RE_SIMULAR.test(k) && /\b(?:sobra|sobrar|renda|orcamento)\b/.test(k))) {
       return { intencao: "simular", ...VAZIO, simulacao: { compra: null, texto } };
     }

@@ -53,6 +53,7 @@ import {
   textoRendaAnotada,
   textoSimulacao,
 } from "./previsao.ts";
+import { CODIGO_MINUTOS, gerarSegredo, hashSegredo, URL_PAINEL } from "./painel.ts";
 import { categoriaPorRegra, termoDaDescricao } from "./regras.ts";
 import { normalizarWhatsapp } from "./telefone.ts";
 import { chave } from "./texto.ts";
@@ -212,6 +213,12 @@ export function comandoDireto(texto: string): Interpretacao | null {
   if (["ajuda", "help", "menu", "oi", "ola", "comandos", "start"].includes(t)) return { intencao: "ajuda", ...vazio };
   if (["saldo", "saldos", "contas", "minhas contas", "faturas", "fatura", "cartoes", "limite"].includes(t)) {
     return { intencao: "contas", ...vazio };
+  }
+  if (["painel", "dashboard", "site", "app", "aplicativo", "abrir painel", "link do painel", "acessar painel"].includes(t)) {
+    return { intencao: "painel", ...vazio, painel: "entrar" };
+  }
+  if (["sair do painel", "desconectar painel", "fechar painel", "encerrar painel", "bloquear painel"].includes(t)) {
+    return { intencao: "painel", ...vazio, painel: "sair" };
   }
   if (["resumo", "extrato", "resumo total", "resumo geral", "por banco", "por conta"].includes(t)) {
     return {
@@ -715,6 +722,29 @@ async function mostrarContas(ctx: Contexto, nome?: string | null): Promise<Resul
   return { texto: semDias ? `${texto}\n\n${PEDIR_DIAS(semDias)}` : texto, status: "processada" };
 }
 
+/** "painel": link de uso único para entrar no painel web. "sair do painel": encerra todos os acessos. */
+async function painel(acao: "entrar" | "sair", ctx: Contexto): Promise<Resultado> {
+  const { repo } = ctx.deps;
+  if (acao === "sair") {
+    const n = await repo.revogarPainel(ctx.usuario.id);
+    return {
+      texto: n
+        ? "🔒 Pronto: encerrei o acesso ao painel em todos os aparelhos. Para entrar de novo, mande *painel*."
+        : "🔒 Não havia nenhum acesso aberto ao painel.",
+      status: "processada",
+    };
+  }
+  const codigo = gerarSegredo();
+  await repo.criarCodigoPainel(ctx.usuario.id, await hashSegredo(codigo), new Date(ctx.deps.agora().getTime() + CODIGO_MINUTOS * 60_000));
+  return {
+    texto: `🖥️ *Seu painel:* ${URL_PAINEL}#c=${codigo}\n\n` +
+      `_O link vale ${CODIGO_MINUTOS} minutos e funciona uma vez. Depois de entrar, o aparelho fica conectado por 90 dias._\n` +
+      "_No celular, abra e use Compartilhar → Adicionar à Tela de Início para virar app._\n" +
+      "_Perdeu o celular? Mande: sair do painel._",
+    status: "processada",
+  };
+}
+
 /** "parar lembretes", "ligar lembretes", "lembretes" (mostra como está). */
 async function configurarLembretes(ligar: boolean | null, ctx: Contexto): Promise<Resultado> {
   const { repo } = ctx.deps;
@@ -939,6 +969,9 @@ async function executar(msg: MensagemRecebida, usuario: Usuario, mensagemId: str
       break;
     case "contas":
       resultado = await mostrarContas(ctx, interpretacao.contaConsulta);
+      break;
+    case "painel":
+      resultado = await painel(interpretacao.painel ?? "entrar", ctx);
       break;
     case "simular":
       resultado = interpretacao.simulacao

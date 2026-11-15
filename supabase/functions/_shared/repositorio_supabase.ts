@@ -491,6 +491,25 @@ export function criarRepositorioSupabase(db: SupabaseClient): Repositorio {
       if (error) falhar("definirRenda", error);
     },
 
+    async criarCodigoPainel(usuarioId, hash, expiraEm) {
+      const { error } = await db
+        .from("acessos_painel")
+        .insert({ usuario_id: usuarioId, tipo: "codigo", hash, expira_em: expiraEm.toISOString() });
+      if (error) falhar("criarCodigoPainel", error);
+    },
+
+    async revogarPainel(usuarioId) {
+      const { data, error } = await db
+        .from("acessos_painel")
+        .update({ revogado: true })
+        .eq("usuario_id", usuarioId)
+        .eq("revogado", false)
+        .gt("expira_em", new Date().toISOString())
+        .select("id");
+      if (error) falhar("revogarPainel", error);
+      return (data ?? []).length;
+    },
+
     async faturasAbertas(usuarioId, hoje) {
       const { data, error } = await db.rpc("faturas_abertas", { p_usuario: usuarioId, p_hoje: hoje });
       if (error) falhar("faturasAbertas", error);

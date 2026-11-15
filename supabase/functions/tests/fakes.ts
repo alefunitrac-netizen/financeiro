@@ -264,6 +264,16 @@ export class RepoMemoria implements Repositorio {
     return Promise.resolve();
   }
   renda: number | null = null;
+  acessosPainel: { hash: string; expiraEm: Date; revogado: boolean }[] = [];
+  criarCodigoPainel(_u: string, hash: string, expiraEm: Date) {
+    this.acessosPainel.push({ hash, expiraEm, revogado: false });
+    return Promise.resolve();
+  }
+  revogarPainel() {
+    const ativos = this.acessosPainel.filter((a) => !a.revogado);
+    ativos.forEach((a) => (a.revogado = true));
+    return Promise.resolve(ativos.length);
+  }
   fluxoMensal(_u: string, inicio: string, fim: string) {
     const meses = new Map<string, { mes: string; receitas: number; gastosAvulsos: number; parcelas: number }>();
     for (const t of this.ativas()) {

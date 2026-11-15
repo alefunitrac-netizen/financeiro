@@ -238,6 +238,10 @@ export interface Repositorio {
   primeiroLancamento(usuarioId: string): Promise<DataISO | null>;
   rendaInformada(usuarioId: string): Promise<number | null>;
   definirRenda(usuarioId: string, centavos: number): Promise<void>;
+  /** Guarda o hash do código de uso único do link do painel. */
+  criarCodigoPainel(usuarioId: string, hash: string, expiraEm: Date): Promise<void>;
+  /** Encerra todos os acessos ao painel (sessões e links ainda não usados). Devolve quantos. */
+  revogarPainel(usuarioId: string): Promise<number>;
 }
 
 // ---------- Saída do interpretador (modelo de IA) ----------
@@ -256,6 +260,7 @@ export type Intencao =
   | "lembretes"
   | "simular"
   | "renda"
+  | "painel"
   | "esclarecer"
   | "fora_do_escopo";
 
@@ -324,6 +329,8 @@ export interface Interpretacao {
   regra?: { termo: string; categoria: string } | null;
   /** Intenção "simular": a compra pensada (null = só a previsão dos próximos meses) e o texto original. */
   simulacao?: { compra: LancamentoInterpretado | null; texto: string } | null;
+  /** Intenção "painel": mandar o link ou encerrar os acessos. */
+  painel?: "entrar" | "sair" | null;
   /** Intenção "renda": "minha renda é 4500" (valor com ponto decimal). */
   renda?: string | null;
   /** Intenção "lembretes": true liga, false desliga, null só mostra como está. */
